@@ -7,6 +7,8 @@ members = [
     "src/shojiwm_rs",
     "src/xdg-desktop-portal-shojiwm",
 ]
+# The vendored xwayland-satellite keeps its own workspace.
+exclude = ["third_party/xwayland-satellite"]
 
 # Iteration profile for the edit-test loop: same optimization level, but
 # parallel codegen, no LTO, and incremental rebuilds. Runtime perf is close
@@ -30,3 +32,9 @@ debug = "line-tables-only"
 # the fastest possible edit-rebuild loop.
 [profile.dev.package."*"]
 opt-level = 3
+
+# xwayland-satellite with a clipboard fix: a late "cancelled" event for an old
+# Wayland source no longer drops the newer X11 selection (see
+# third_party/xwayland-satellite/SHOJIWM_PATCHES.md).
+[patch."https://github.com/bea4dev/xwayland-satellite.git"]
+xwayland-satellite = { path = "third_party/xwayland-satellite" }
