@@ -390,22 +390,33 @@ function virtualDesktops(view: ReturnType<typeof HYBRID_WINDOW_MANAGER.viewForIp
   return { desktops, rows: 1, minimizedWindowIds };
 }
 
-COMPOSITOR.workspace.event.onActivate((event) => {
-  const [monitor, rawIndex] = event.workspaceId.split(":");
+/** A workspace id "MONITOR:INDEX" as [monitor, index]; `null` when malformed. */
+function parseWorkspaceId(workspaceId: string): [string, number] | null {
+  const [monitor, rawIndex] = workspaceId.split(":");
   const index = Number(rawIndex);
   if (!monitor || !Number.isInteger(index) || index < 1) {
+    return null;
+  }
+  return [monitor, index];
+}
+
+COMPOSITOR.workspace.event.onActivate((event) => {
+  const target = parseWorkspaceId(event.workspaceId);
+  if (!target) {
     return;
   }
-  // KDE's Pager drag or the taskbar's "move to desktop": move the window.
-  if (event.windowId) {
-    const window = HYBRID_WINDOW_MANAGER.findWindowById(event.windowId);
-    if (window) {
-      HYBRID_WINDOW_MANAGER.moveWindowToWorkspace(window, monitor, index);
-    }
-    scheduleWorkspaceBroadcast();
+  HYBRID_WINDOW_MANAGER.activate(target[0], target[1]);
+  scheduleWorkspaceBroadcast();
+});
+
+// KDE's Pager drag or the taskbar's "move to desktop": move the window.
+COMPOSITOR.workspace.event.onMoveWindow((event) => {
+  const target = parseWorkspaceId(event.workspaceId);
+  const window = HYBRID_WINDOW_MANAGER.findWindowById(event.windowId);
+  if (!target || !window) {
     return;
   }
-  HYBRID_WINDOW_MANAGER.activate(monitor, index);
+  HYBRID_WINDOW_MANAGER.moveWindowToWorkspace(window, target[0], target[1]);
   scheduleWorkspaceBroadcast();
 });
 
