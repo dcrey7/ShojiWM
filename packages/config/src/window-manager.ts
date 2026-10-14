@@ -186,6 +186,8 @@ const TILE_WIDTH_RATIO = 0.5;
 /** With the even split: up to this many columns share the screen. */
 const TILE_FIT_MAX_COLUMNS = 3;
 const TILE_MIN_WIDTH = 240;
+/** Column width presets (Super+R), as shares of the tile viewport. */
+const TILE_WIDTH_PRESETS = [1 / 3, 1 / 2, 2 / 3, 1];
 
 /** True when tiles split the screen evenly (see `configureEvenTileSplit`). */
 let evenTileSplit: () => boolean = () => false;
@@ -825,7 +827,14 @@ export class HybridWindowManager {
       window.state[WINDOW_STATE_RECT].set(this.naturalRootRect(window));
     }
 
-    if (window.isMaximized()) {
+    if (window.isMaximized() && workspace?.isTiled && workspace.shouldTile(window)) {
+      // A maximized tile keeps its slot in the row. Do not put it at the
+      // screen's maximized rect: the row was laid out for its old width, so
+      // it would cover its neighbours. Lay the row out again instead.
+      window.state[WINDOW_STATE_RESTORE_RECT].set(null);
+      window.state[WINDOW_STATE_MAXIMIZED].set(true);
+      workspace.applyLayout({ animate: false, preserveMissingActive: true });
+    } else if (window.isMaximized()) {
       window.state[WINDOW_STATE_RESTORE_RECT].set(
         this.initialRestoreRectForMaximizedWindow(window),
       );
@@ -1686,6 +1695,20 @@ export class HybridWindowManager {
   public focusInColumn(direction: -1 | 1) {
     this.runOnTiledWorkspace((workspace) =>
       workspace.focusInColumn(direction),
+    );
+  }
+
+  /** Next (1) or previous (-1) width preset for the focused column. */
+  public cycleFocusedColumnWidth(direction: -1 | 1) {
+    this.runOnTiledWorkspace((workspace) =>
+      workspace.cycleFocusedColumnWidth(direction),
+    );
+  }
+
+  /** Make the focused column `delta` px wider (or narrower when negative). */
+  public resizeFocusedColumn(delta: number) {
+    this.runOnTiledWorkspace((workspace) =>
+      workspace.resizeFocusedColumn(delta),
     );
   }
 
@@ -4087,22 +4110,34 @@ export class Workspace {
     return true;
   }
 
-  /** Move the focused tile to the bottom of the column on its left. */
+  /**
+   * Move the focused tile to the bottom of the column on its left. A
+   * maximized tile cannot share a column, so the focused tile and the left
+   * column are un-maximized first. A fullscreen tile is never stacked.
+   */
   public stackFocusedIntoLeftColumn(): boolean {
     const focused = this.focusedTile();
-    if (!focused || this.isFullTile(focused)) {
+    if (!focused || focused.state[WINDOW_STATE_FULLSCREEN]()) {
       return false;
     }
     const columns = this.tileColumns();
     const index = this.columnIndexOf(columns, focused.id);
-    if (index <= 0 || columns[index - 1].some((w) => this.isFullTile(w))) {
+    if (index <= 0) {
       return false;
+    }
+    const leftColumn = columns[index - 1];
+    if (leftColumn.some((w) => w.state[WINDOW_STATE_FULLSCREEN]())) {
+      return false;
+    }
+    this.unmaximizeTile(focused);
+    for (const window of leftColumn) {
+      this.unmaximizeTile(window);
     }
 
     const allColumns = this.allTileColumns()
       .map((column) => column.filter((window) => window.id !== focused.id))
       .filter((column) => column.length > 0);
-    const target = this.columnIndexOf(allColumns, columns[index - 1][0].id);
+    const target = this.columnIndexOf(allColumns, leftColumn[0].id);
     if (target < 0) {
       return false;
     }
@@ -4156,6 +4191,125 @@ export class Workspace {
     this.scrollToWindow(next);
     this.applyLayout();
     next.focus();
+    return true;
+  }
+
+  /**
+   * Give the focused column the next width preset (1/3, 1/2, 2/3, full).
+   * `direction` 1 takes the next larger preset and wraps to 1/3 after full.
+   * -1 goes the other way. A maximized tile counts as full width.
+   */
+  public cycleFocusedColumnWidth(direction: -1 | 1): boolean {
+    const focused = this.focusedTile();
+    if (!focused || focused.state[WINDOW_STATE_FULLSCREEN]()) {
+      return false;
+    }
+    const viewportRect = this.tileViewportRect();
+    const presets = TILE_WIDTH_PRESETS.map((share) =>
+      this.clampTileWidth(
+        focused,
+        this.presetTileWidth(share, viewportRect),
+        viewportRect,
+      ),
+    );
+    const full = presets[presets.length - 1];
+    const current = focused.state[WINDOW_STATE_MAXIMIZED]()
+      ? full
+      : this.columnWidthOf(focused, viewportRect);
+    // Skip presets within 1 px of the current width, so a press always
+    // changes the width (unless the min / max width blocks every preset).
+    const next =
+      direction > 0
+        ? (presets.find((width) => width > current + 1) ?? presets[0])
+        : ([...presets].reverse().find((width) => width < current - 1) ??
+          full);
+    this.unmaximizeTile(focused);
+    return this.setFocusedColumnWidth(focused, next);
+  }
+
+  /** Make the focused column `delta` px wider (or narrower when negative). */
+  public resizeFocusedColumn(delta: number): boolean {
+    const focused = this.focusedTile();
+    if (!focused || focused.state[WINDOW_STATE_FULLSCREEN]()) {
+      return false;
+    }
+    const viewportRect = this.tileViewportRect();
+    // A maximized tile starts from the full viewport width.
+    const current = focused.state[WINDOW_STATE_MAXIMIZED]()
+      ? this.presetTileWidth(1, viewportRect)
+      : this.columnWidthOf(focused, viewportRect);
+    const next = this.clampTileWidth(focused, current + delta, viewportRect);
+    this.unmaximizeTile(focused);
+    return this.setFocusedColumnWidth(focused, next);
+  }
+
+  /**
+   * The width of a column that takes `share` of the viewport. The gaps are
+   * counted, so 2 columns of 1/2, 3 of 1/3, or 1/3 + 2/3 fill the viewport
+   * exactly with one gap between columns.
+   * Example: viewport 2536, gap 12: 1/2 = 1262, 1/3 = 837.33, 2/3 = 1686.67.
+   */
+  private presetTileWidth(
+    share: number,
+    viewportRect: ManagedWindowRect,
+  ): number {
+    return share * (read(viewportRect.width) + TILE_GAP) - TILE_GAP;
+  }
+
+  /** Keep `width` between the min and max tile width of `window`. */
+  private clampTileWidth(
+    window: WaylandWindow,
+    width: number,
+    viewportRect: ManagedWindowRect,
+  ): number {
+    const minWidth = this.minTileWidth(window, viewportRect);
+    return clamp(
+      width,
+      minWidth,
+      Math.max(minWidth, this.maxTileWidth(window)),
+    );
+  }
+
+  /** The width of the column that holds `window`. */
+  private columnWidthOf(
+    window: WaylandWindow,
+    viewportRect: ManagedWindowRect,
+  ): number {
+    const columns = this.tileColumns();
+    const head = columns[this.columnIndexOf(columns, window.id)]?.[0];
+    return this.tileWidthForWindow(head ?? window, viewportRect);
+  }
+
+  /**
+   * Store `width` for the column of `window` like a resize by hand (so the
+   * even split keeps it), then lay out and scroll the column into view.
+   */
+  private setFocusedColumnWidth(window: WaylandWindow, width: number): boolean {
+    // The column takes its width from its first window.
+    const columns = this.tileColumns();
+    const head = columns[this.columnIndexOf(columns, window.id)]?.[0];
+    const widthOwner = head ?? window;
+    this.tileWidthByWindowId.set(widthOwner.id, width);
+    this.userSizedTileIds.add(widthOwner.id);
+    this.stopKineticScroll();
+    this.activeWindowId = window.id;
+    this.scrollToWindow(window);
+    this.applyLayout();
+    return true;
+  }
+
+  /**
+   * Un-maximize a tile: clear the flag and the restore rect, and tell the
+   * client (this also updates the title bar button). Same steps as
+   * `resizeTile` and `beginTileDrag`. Returns false when it was not maximized.
+   */
+  private unmaximizeTile(window: WaylandWindow): boolean {
+    if (!window.state[WINDOW_STATE_MAXIMIZED]()) {
+      return false;
+    }
+    window.state[WINDOW_STATE_MAXIMIZED].set(false);
+    window.state[WINDOW_STATE_RESTORE_RECT].set(null);
+    window.unmaximize();
     return true;
   }
 

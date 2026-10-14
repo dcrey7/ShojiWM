@@ -22,6 +22,9 @@ import { COMPOSITOR } from "shoji_wm";
 import type { HybridWindowManager } from "./window-manager";
 import type { WindowSwitcher } from "./window-switcher";
 
+/** Super+Minus / Super+Equal make the focused column this much narrower / wider. */
+const TILE_WIDTH_STEP = 100;
+
 /** The groups of the cheat sheet, in the order it shows them. */
 export const KEY_GROUPS = [
   "Apps",
@@ -323,6 +326,28 @@ export function createKeymap(deps: KeymapDeps): KeyEntry[] {
       label: "Super+Period",
       description: "Take the tile out of its stack",
       binds: [{ keys: "Super+Period", action: changesLayout(() => wm.unstackFocusedWindow()) }],
+    },
+    {
+      id: "column-width-preset",
+      group: "Tiling",
+      // Super+Shift+R reloads the config (built into the compositor), so the
+      // reverse cycle takes Ctrl.
+      label: "Super+R / Super+Ctrl+R",
+      description: "Column width: 1/3, 1/2, 2/3, full (Ctrl: back)",
+      binds: [
+        { keys: "Super+R", action: changesLayout(() => wm.cycleFocusedColumnWidth(1)) },
+        { keys: "Super+Ctrl+R", action: changesLayout(() => wm.cycleFocusedColumnWidth(-1)) },
+      ],
+    },
+    {
+      id: "column-width-step",
+      group: "Tiling",
+      label: "Super+- / Super+=",
+      description: `Column narrower / wider (${TILE_WIDTH_STEP} px)`,
+      binds: [
+        { keys: "Super+Minus", action: changesLayout(() => wm.resizeFocusedColumn(-TILE_WIDTH_STEP)) },
+        { keys: "Super+Equal", action: changesLayout(() => wm.resizeFocusedColumn(TILE_WIDTH_STEP)) },
+      ],
     },
     {
       id: "tile-scroll",
