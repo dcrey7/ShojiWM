@@ -8,6 +8,7 @@ import {
   cycleWidthShare,
   flip,
   insert,
+  isStacked,
   layout,
   leafIds,
   neighbour,
@@ -311,6 +312,18 @@ test("stackOnto puts a window under its left neighbour; unstack undoes it", () =
   // 1366 x 768: two stacked would be under 400 px high.
   const small = open(SMALL, 2);
   assert.equal(stackOnto(small, "2", "1", SMALL, GAP), small);
+});
+
+test("stack on / off: two presses give back the start, never a swap", () => {
+  const two = open(WIDE, 2);
+  // Focus on 2: join under 1, then leave again -> 1 | 2.
+  const joined = stackOnto(two, "2", "1", WIDE, GAP);
+  assert.ok(isStacked(joined, "2"));
+  assert.deepEqual(rects(unstack(joined, "2", WIDE, GAP)), rects(two));
+  // Left edge, focus on 1: 2 is pulled in below 1; leaving with focus on 1
+  // still gives 1 | 2 (top goes left).
+  assert.deepEqual(rects(unstack(joined, "1", WIDE, GAP)), rects(two));
+  assert.ok(!isStacked(two, "1"));
 });
 
 test("resizeSoloShare stays between the min width and full", () => {

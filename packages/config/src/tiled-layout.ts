@@ -584,10 +584,28 @@ export function stackOnto(
   return keepIfFits(tree, next, area, gap, limits);
 }
 
+/** True when `id` is in a stack: its own split is top and bottom. */
+export function isStacked(tree: TileTree, id: string): boolean {
+  const visit = (node: TileNode): boolean => {
+    if (node.kind === "leaf") {
+      return false;
+    }
+    const isChild =
+      (node.first.kind === "leaf" && node.first.id === id) ||
+      (node.second.kind === "leaf" && node.second.id === id);
+    if (isChild) {
+      return node.direction === "column";
+    }
+    return visit(hasLeaf(node.first, id) ? node.first : node.second);
+  };
+  return !!tree && hasLeaf(tree, id) && visit(tree);
+}
+
 /**
- * Super+Period: take `id` out of its stack. Its stack (a top and bottom
- * split) turns into a side by side split, `id` on the right. The same tree
- * comes back when `id` is not in a stack or a window would get too small.
+ * Take `id` out of its stack. Its stack (a top and bottom split) turns
+ * into a side by side split in the same order: top goes left, bottom goes
+ * right. So a stack and an unstack undo each other. The same tree comes
+ * back when `id` is not in a stack or a window would get too small.
  */
 export function unstack(
   tree: TileTree,
@@ -613,8 +631,8 @@ export function unstack(
         kind: "split",
         direction: "row",
         ratio: 0.5,
-        first: isFirst ? node.second : node.first,
-        second: { kind: "leaf", id },
+        first: node.first,
+        second: node.second,
       };
     }
     return hasLeaf(node.first, id)

@@ -33,6 +33,7 @@ import {
   flip as flipTile,
   hasLeaf,
   insert as insertTile,
+  isStacked as isTileStacked,
   cycleSoloShare,
   cycleWidthShare,
   layout as tileLayout,
@@ -1825,14 +1826,9 @@ export class HybridWindowManager {
     });
   }
 
-  /** Tiled mode, Super+Comma: stack the focused window under its left neighbour. */
-  public stackFocusedTile() {
-    this.runOnTiledLayout((workspace) => workspace.stackFocusedTile());
-  }
-
-  /** Tiled mode, Super+Period: take the focused window out of its stack. */
-  public unstackFocusedTile() {
-    this.runOnTiledLayout((workspace) => workspace.unstackFocusedTile());
+  /** Tiled mode, Super+Comma: join the stack on the left, or leave the stack. */
+  public toggleStackFocusedTile() {
+    this.runOnTiledLayout((workspace) => workspace.toggleStackFocusedTile());
   }
 
   /** Move the focused tile to the bottom of the column on its left. */
@@ -5547,7 +5543,7 @@ export class Workspace {
 
   /** Tiled mode: flip the split of the focused window. */
   /**
-   * Tiled mode, Super+Comma: stack the focused window under the window on
+   * Tiled mode: stack the focused window under the window on
    * its left. On the left edge, pull the window on its right in below it.
    */
   public stackFocusedTile(): boolean {
@@ -5578,7 +5574,26 @@ export class Workspace {
     return true;
   }
 
-  /** Tiled mode, Super+Period: take the focused window out of its stack. */
+  /**
+   * Tiled mode, Super+Comma: one key for both. A window in a stack leaves
+   * it (top goes left, bottom goes right); a window on its own joins the
+   * stack on its left. Two presses always undo each other.
+   */
+  public toggleStackFocusedTile(): boolean {
+    if (this.mode !== "tiled") {
+      return false;
+    }
+    this.syncTree();
+    const id = this.tiledAnchorId();
+    if (!id) {
+      return false;
+    }
+    return isTileStacked(this.tree, id)
+      ? this.unstackFocusedTile()
+      : this.stackFocusedTile();
+  }
+
+  /** Tiled mode: take the focused window out of its stack. */
   public unstackFocusedTile(): boolean {
     if (this.mode !== "tiled") {
       return false;
