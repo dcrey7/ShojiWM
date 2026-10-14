@@ -28,6 +28,7 @@ import type { ManagedWindowRect, WindowSizeConstraints } from "shoji_wm/types";
 import { playRectAnimation, stopRectAnimation } from "./window-animation";
 import { magicLampStart, magicLampStop } from "./magic-lamp";
 import {
+  buildTree,
   canInsert as canInsertTile,
   flip as flipTile,
   hasLeaf,
@@ -4164,7 +4165,7 @@ export class Workspace {
       const tileIndex = this.tileIndexOf(window.id);
       // Tiled mode: the window that takes the space also takes the focus.
       const treeSuccessorId = siblingLeaf(this.tree, window.id);
-      this.tree = removeTile(this.tree, window.id);
+      this.tree = this.rebuiltTree(removeTile(this.tree, window.id));
       this.forgetStacking(window, this.shouldTile(window));
       this.windows.splice(index, 1);
       this.tileWidthByWindowId.delete(window.id);
@@ -4713,6 +4714,24 @@ export class Workspace {
     this.setVisible(visible);
   }
 
+  /**
+   * True when the window is fully outside its monitor: a tile scrolled out
+   * of view in scrolling mode. A workspace slide moves every window
+   * sideways, so such a window would slide across the screen. It stays
+   * hidden during the slide instead.
+   */
+  private isOffScreen(window: WaylandWindow): boolean {
+    const monitor = COMPOSITOR.output.current[this.monitor];
+    if (!monitor?.resolution) {
+      return false;
+    }
+    const left = monitor.position.x;
+    const right = left + monitor.resolution.width / monitor.scale;
+    const rect = window.state[WINDOW_STATE_RECT]();
+    const x = read(rect.x);
+    return x + read(rect.width) <= left || x >= right;
+  }
+
   public prepareWorkspaceTransition(offsetX: number, opacity: number) {
     this.visibilityAnimationToken += 1;
     for (const window of this.windows) {
@@ -4725,7 +4744,9 @@ export class Workspace {
       }
       window.state[WINDOW_STATE_WORKSPACE_VISIBLE].set(true);
       window.state[WINDOW_STATE_WORKSPACE_OFFSET_X].set(offsetX);
-      window.state[WINDOW_STATE_WORKSPACE_OPACITY].set(opacity);
+      window.state[WINDOW_STATE_WORKSPACE_OPACITY].set(
+        this.isOffScreen(window) ? 0 : opacity,
+      );
     }
   }
 
@@ -4742,7 +4763,9 @@ export class Workspace {
       }
       window.state[WINDOW_STATE_WORKSPACE_VISIBLE].set(true);
       window.state[WINDOW_STATE_WORKSPACE_OFFSET_X].set(offsetX);
-      window.state[WINDOW_STATE_WORKSPACE_OPACITY].set(opacity);
+      window.state[WINDOW_STATE_WORKSPACE_OPACITY].set(
+        this.isOffScreen(window) ? 0 : opacity,
+      );
     }
   }
 
@@ -4785,12 +4808,13 @@ export class Workspace {
       // already true), but for to-workspace's second call this keeps
       // the same invariant in case prepareWorkspaceTransition's hold
       // animation has already completed (e.g., rapid switches).
+      const offScreen = this.isOffScreen(window);
       scheduleWorkspaceVisualAnimation(
         window,
         options.fromOffsetX,
         options.toOffsetX,
-        options.fromOpacity,
-        options.toOpacity,
+        offScreen ? 0 : options.fromOpacity,
+        offScreen ? 0 : options.toOpacity,
         WINDOW_MANAGEMENT_EASING,
         WORKSPACE_SWITCH_ANIMATION_DURATION,
       );
@@ -5186,10 +5210,12 @@ export class Workspace {
     const tileable = this.tileableWindows();
     const tileIds = new Set(tileable.map((window) => window.id));
     let tree = this.tree;
-    for (const id of leafIds(tree)) {
-      if (!tileIds.has(id)) {
-        tree = removeTile(tree, id);
-      }
+    const leaving = leafIds(tree).filter((id) => !tileIds.has(id));
+    for (const id of leaving) {
+      tree = removeTile(tree, id);
+    }
+    if (leaving.length > 0) {
+      tree = this.rebuiltTree(tree);
     }
     const missing = tileable.filter((window) => !hasLeaf(tree, window.id));
     if (missing.length > 0) {
@@ -5208,6 +5234,16 @@ export class Workspace {
       }
     }
     this.tree = tree;
+  }
+
+  /**
+   * The tree after a window left, laid out again with the rules in the same
+   * window order. So the windows that stay always get the normal layout for
+   * their count (2 side by side, 3 as one big and two stacked), not the cut
+   * directions left over from before. Flips and divider moves are lost.
+   */
+  private rebuiltTree(tree: TileTree): TileTree {
+    return buildTree(leafIds(tree), this.tiledArea(), TILE_GAP);
   }
 
   /** The tile the tiled-mode keys act on: the focused one, else the active one. */
