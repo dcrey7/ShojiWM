@@ -214,6 +214,8 @@ const WORKSPACE_SWITCH_ANIMATION_DURATION = TILE_ANIMATION_DURATION;
  * short and crisp; the window opens (Magic Lamp) only after it.
  */
 const WORKSPACE_OVERFLOW_SLIDE_DURATION = seconds(0.22);
+/** How long a restored tiled layout keeps cells for windows not back yet. */
+const RESTORED_TREE_WAIT_MS = 3000;
 /** A sliding workspace fades only down to this opacity (a light fade). */
 const WORKSPACE_SLIDE_MIN_OPACITY = 0.5;
 const WORKSPACE_GESTURE_FINGERS = 3;
@@ -326,6 +328,9 @@ interface WorkspaceSnapshot {
   isTiled: boolean;
   /** Missing in snapshots from before the tiled mode: then isTiled decides (true: tiled). */
   mode?: WorkspaceMode;
+  /** The tiled layout. Missing in older snapshots: then it is built again. */
+  tree?: TileTree;
+  soloShare?: number;
   lastTilingMode?: TilingMode;
   activeWindowId: string | null;
   scrollOffset: number;
@@ -4056,6 +4061,8 @@ export class Workspace {
   private readonly heldHiddenIds = new Set<string>();
   /** Tiled mode: the share of the page width a lone window takes (Super+R). */
   private soloShare = 1;
+  /** Windows of a restored tiled layout that have not come back yet. */
+  private awaitedTreeIds = new Set<string>();
   private draggingWindowId: string | null = null;
   // Layout slot reserved for the tile being dragged (the gap opened in the row).
   // Captured during applyLayout so the bar can preview where the tile will land.
@@ -5358,7 +5365,13 @@ export class Workspace {
     const tileable = this.tileableWindows();
     const tileIds = new Set(tileable.map((window) => window.id));
     let tree = this.tree;
-    const leaving = leafIds(tree).filter((id) => !tileIds.has(id));
+    for (const id of tileIds) {
+      this.awaitedTreeIds.delete(id);
+    }
+    // A window of a restored layout that is not back yet keeps its cell.
+    const leaving = leafIds(tree).filter(
+      (id) => !tileIds.has(id) && !this.awaitedTreeIds.has(id),
+    );
     for (const id of leaving) {
       tree = removeTile(tree, id);
     }
@@ -6406,6 +6419,8 @@ export class Workspace {
       isTiled: this.isTiled,
       mode: this.mode,
       lastTilingMode: this.lastTilingMode,
+      tree: this.tree,
+      soloShare: this.soloShare,
       activeWindowId: this.activeWindowId,
       scrollOffset: this.scrollOffset,
       windows: this.windows.map((window) => this.snapshotWindow(window)),
@@ -6414,12 +6429,26 @@ export class Workspace {
 
   public restore(snapshot: WorkspaceSnapshot) {
     // A snapshot from before the tiled mode only has isTiled: it opens
-    // tiled. The tree is not in the snapshot; it is built again.
+    // tiled.
     this.mode = snapshot.mode ?? (snapshot.isTiled ? "tiled" : "floating");
     this.lastTilingMode =
       snapshot.lastTilingMode ??
       (this.mode === "floating" ? "tiled" : this.mode);
-    this.tree = null;
+    // The tiled layout comes back as it was. Its windows come back one by
+    // one after the reload; until then their cells wait for them (see
+    // syncTree). A window that never comes back loses its cell after
+    // RESTORED_TREE_WAIT_MS.
+    this.tree = snapshot.tree ?? null;
+    this.soloShare = snapshot.soloShare ?? 1;
+    this.awaitedTreeIds = new Set(leafIds(this.tree));
+    setTimeout(() => {
+      if (this.awaitedTreeIds.size > 0) {
+        this.awaitedTreeIds.clear();
+        if (this.mode === "tiled") {
+          this.applyLayout({ animate: false });
+        }
+      }
+    }, RESTORED_TREE_WAIT_MS);
     this.activeWindowId = snapshot.activeWindowId;
     this.scrollOffset = snapshot.scrollOffset;
     this.tileWidthByWindowId.clear();

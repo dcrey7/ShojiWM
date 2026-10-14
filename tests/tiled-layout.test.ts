@@ -230,6 +230,38 @@ test("cycleWidthShare: Super+R steps the stack through 1/3, 1/2, 2/3", () => {
   }
 });
 
+test("cycleWidthShare works on every column of 3, nested either way", () => {
+  const leaf = (id: string) => ({ kind: "leaf" as const, id });
+  const row = (ratio: number, first: TileTree, second: TileTree): TileTree => ({
+    kind: "split",
+    direction: "row",
+    ratio,
+    first: first!,
+    second: second!,
+  });
+  // 3 even columns: (1 | 2) | 3 and 1 | (2 | 3).
+  const leftPair = row(2 / 3, row(0.5, leaf("1"), leaf("2")), leaf("3"));
+  const rightPair = row(1 / 3, leaf("1"), row(0.5, leaf("2"), leaf("3")));
+  const usable = WIDE.width - 2 * GAP;
+  for (const tree of [leftPair, rightPair]) {
+    for (const id of ["1", "2", "3"]) {
+      const next = cycleWidthShare(tree, id, 1, WIDE, GAP);
+      assert.notEqual(next, tree, `Super+R on ${id} changed nothing`);
+      const cells = rects(next);
+      // 1/3 -> 1/2 of the page.
+      assert.ok(Math.abs(cells[Number(id)][2] - usable / 2) < 1, `${id}: ${cells[Number(id)][2]}`);
+      for (const [x, , w] of Object.values(cells)) {
+        assert.ok(w >= 600 - 0.5 && x >= 0 && x + w <= WIDE.width + 0.5);
+      }
+    }
+  }
+  // Uneven: 631 | 631 | 1274. The others share the rest evenly.
+  const uneven = row(0.5, row(0.5, leaf("1"), leaf("2")), leaf("3"));
+  const next = cycleWidthShare(uneven, "1", 1, WIDE, GAP);
+  assert.notEqual(next, uneven);
+  assert.ok(Math.abs(rects(next)[1][2] - usable / 3) < 1);
+});
+
 test("cycleWidthShare skips shares under the min size", () => {
   // 1366 wide: 1/3 is 451 px, under 600, so no share fits.
   const two = open(SMALL, 2);

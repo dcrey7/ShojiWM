@@ -348,12 +348,14 @@ function updateParentSplit(
 export const TILED_WIDTH_SHARES = [1 / 3, 1 / 2, 2 / 3];
 
 /**
- * Super+R: give the side that holds `id` the next width share. The split is
- * the nearest side-by-side split above `id`, so in a stack the whole stack
- * gets wider or narrower. `step` 1 goes to the next bigger share and wraps
- * from 2/3 to 1/3; `step` -1 goes the other way. The other side gets the
- * rest of the width. A share that would put a window under the minimum size
- * is skipped. The same tree comes back when nothing changes.
+ * Super+R: the focused window's column takes the next share of the page
+ * width (1/3, 1/2, 2/3). The column is the side that holds `id` in the
+ * nearest side-by-side split, so in a stack the whole stack changes. The
+ * other columns get the rest and keep their sizes relative to each other,
+ * so every window stays on the page. `step` 1 goes to the next bigger share
+ * and wraps from 2/3 to 1/3; `step` -1 goes the other way. A share that
+ * would put a window under the minimum size is skipped. The same tree comes
+ * back when nothing changes.
  */
 export function cycleWidthShare(
   tree: TileTree,
@@ -366,47 +368,100 @@ export function cycleWidthShare(
   if (!tree || !hasLeaf(tree, id)) {
     return tree;
   }
-  // Returns the new node, or null when no side-by-side split is below `node`.
-  const visit = (node: TileNode, rect: TileRect): TileNode | null => {
-    if (node.kind === "leaf") {
-      return null;
-    }
+  // The side-by-side splits above `id`, from the top down.
+  const rows: { split: TileSplit; width: number; inFirst: boolean }[] = [];
+  let node: TileNode = tree;
+  let rect = area;
+  while (node.kind === "split") {
     const [firstRect, secondRect] = splitRect(rect, node.direction, node.ratio, gap);
     const inFirst = hasLeaf(node.first, id);
-    // The nearest split wins, so look deeper first.
-    const deeper = inFirst
-      ? visit(node.first, firstRect)
-      : visit(node.second, secondRect);
-    if (deeper) {
-      return inFirst ? { ...node, first: deeper } : { ...node, second: deeper };
+    if (node.direction === "row") {
+      rows.push({ split: node, width: rect.width, inFirst });
     }
-    if (node.direction !== "row") {
-      return null;
+    node = inFirst ? node.first : node.second;
+    rect = inFirst ? firstRect : secondRect;
+  }
+  if (rows.length === 0) {
+    return tree;
+  }
+  // Width of the top split, and of the column and the other sides now.
+  const total = rows[0].width;
+  const sides = rows.map(({ split, width, inFirst }) => {
+    const available = width - gap;
+    const mine = available * (inFirst ? split.ratio : 1 - split.ratio);
+    return { mine, other: available - mine };
+  });
+  const column = sides[sides.length - 1].mine;
+  const others = sides.reduce((sum, side) => sum + side.other, 0);
+  const gaps = rows.length * gap;
+  // Shares are of the page width without the gaps between its columns,
+  // so 1/2 is the same width for every column.
+  const usable = total - (columnCount(rows[0].split) - 1) * gap;
+  if (usable <= 0 || others <= 0) {
+    return tree;
+  }
+
+  // How many columns sit side by side in the other side at each level.
+  const otherColumns = rows.map(({ split, inFirst }) =>
+    columnCount(inFirst ? split.second : split.first),
+  );
+  const allOtherColumns = otherColumns.reduce((sum, count) => sum + count, 0);
+
+  // "scale": every other column scales by the same factor, so they keep
+  // their sizes relative to each other. "even": the other columns share
+  // the rest evenly (used when scaling would make one too narrow).
+  const withShare = (share: number, mode: "scale" | "even"): TileTree => {
+    const target = share * usable;
+    const rest = total - gaps - target;
+    const factor = rest / others;
+    const innerGaps = otherColumns.reduce((sum, count) => sum + (count - 1) * gap, 0);
+    const unit = (rest - innerGaps) / allOtherColumns;
+    const ratios = new Map<TileSplit, number>();
+    let inside = target;
+    for (let level = rows.length - 1; level >= 0; level--) {
+      const other =
+        mode === "scale"
+          ? sides[level].other * factor
+          : otherColumns[level] * unit + (otherColumns[level] - 1) * gap;
+      const ratio = inside / (inside + other);
+      ratios.set(rows[level].split, rows[level].inFirst ? ratio : 1 - ratio);
+      inside = inside + other + gap;
     }
-    const available = rect.width - gap;
-    if (available <= 0) {
-      return node;
-    }
-    const low = Math.max(
-      TILED_MIN_RATIO,
-      minSize(node.first, "width", gap, limits) / available,
-    );
-    const high = Math.min(
-      1 - TILED_MIN_RATIO,
-      1 - minSize(node.second, "width", gap, limits) / available,
-    );
-    const share = inFirst ? node.ratio : 1 - node.ratio;
-    const next = nextShare(share, step, (candidate) => {
-      const ratio = inFirst ? candidate : 1 - candidate;
-      return ratio >= low - 1e-9 && ratio <= high + 1e-9;
-    });
-    if (next === null) {
-      return node;
-    }
-    return { ...node, ratio: inFirst ? next : 1 - next };
+    const rebuild = (current: TileNode): TileNode => {
+      if (current.kind === "leaf") {
+        return current;
+      }
+      return {
+        ...current,
+        ratio: ratios.get(current) ?? current.ratio,
+        first: rebuild(current.first),
+        second: rebuild(current.second),
+      };
+    };
+    return rebuild(tree);
   };
-  const next = visit(tree, area);
-  return next ?? tree;
+
+  let candidateTree: TileTree = tree;
+  const next = nextShare(column / usable, step, (candidate) => {
+    for (const mode of ["scale", "even"] as const) {
+      candidateTree = withShare(candidate, mode);
+      if (fitsMinSize(candidateTree, area, gap, limits)) {
+        return true;
+      }
+    }
+    return false;
+  });
+  return next === null ? tree : candidateTree;
+}
+
+/** How many columns sit side by side in `node`. */
+function columnCount(node: TileNode): number {
+  if (node.kind === "leaf") {
+    return 1;
+  }
+  const first = columnCount(node.first);
+  const second = columnCount(node.second);
+  return node.direction === "row" ? first + second : Math.max(first, second);
 }
 
 /** The widths Super+R steps through for a window alone on its page. */
