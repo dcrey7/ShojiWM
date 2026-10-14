@@ -1412,8 +1412,8 @@ COMPOSITOR.window.composition = (window: WaylandWindow) => {
   );
 
   const borderColor = window.isFocused((focused) =>
-    // A faint white hairline, like macOS, instead of a gold focus border.
-    focused ? "#FFFFFF26" : "#FFFFFF14",
+    // A clear white line marks the focused window; the others keep a faint one.
+    focused ? "#FFFFFF73" : "#FFFFFF14",
   );
   // A soft drop shadow under the frame; the focused window floats a bit higher.
   // The window selected in the window switcher glows white instead (it fits
