@@ -4122,8 +4122,12 @@ export class Workspace {
     }
     const columns = this.tileColumns();
     const index = this.columnIndexOf(columns, focused.id);
-    if (index <= 0) {
+    if (index < 0) {
       return false;
+    }
+    if (index === 0) {
+      // No column on the left: pull the next window on the right in.
+      return this.pullRightTileIntoFocusedColumn(focused, columns);
     }
     const leftColumn = columns[index - 1];
     if (leftColumn.some((w) => w.state[WINDOW_STATE_FULLSCREEN]())) {
@@ -4142,6 +4146,39 @@ export class Workspace {
       return false;
     }
     allColumns[target].push(focused);
+    return this.commitColumnChange(focused, allColumns);
+  }
+
+  /**
+   * Put the top window of the column on the right at the bottom of the
+   * focused column. Focus stays on `focused`.
+   */
+  private pullRightTileIntoFocusedColumn(
+    focused: WaylandWindow,
+    columns: WaylandWindow[][],
+  ): boolean {
+    const index = this.columnIndexOf(columns, focused.id);
+    const rightColumn = columns[index + 1];
+    if (!rightColumn) {
+      return false;
+    }
+    const pulled = rightColumn[0];
+    if (pulled.state[WINDOW_STATE_FULLSCREEN]()) {
+      return false;
+    }
+    for (const window of columns[index]) {
+      this.unmaximizeTile(window);
+    }
+    this.unmaximizeTile(pulled);
+
+    const allColumns = this.allTileColumns()
+      .map((column) => column.filter((window) => window.id !== pulled.id))
+      .filter((column) => column.length > 0);
+    const target = this.columnIndexOf(allColumns, focused.id);
+    if (target < 0) {
+      return false;
+    }
+    allColumns[target].push(pulled);
     return this.commitColumnChange(focused, allColumns);
   }
 

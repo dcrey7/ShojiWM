@@ -317,7 +317,7 @@ export function createKeymap(deps: KeymapDeps): KeyEntry[] {
       id: "stack",
       group: "Tiling",
       label: "Super+Comma",
-      description: "Stack the tile under the column on its left",
+      description: "Stack the tile under the column on its left (first column: pull the next one in)",
       binds: [{ keys: "Super+Comma", action: changesLayout(() => wm.stackFocusedIntoLeftColumn()) }],
     },
     {
