@@ -409,17 +409,58 @@ export function cycleWidthShare(
   return next ?? tree;
 }
 
+/** The widths Super+R steps through for a window alone on its page. */
+export const TILED_SOLO_SHARES = [1 / 3, 1 / 2, 2 / 3, 1];
+
 /**
- * The share after `share` in TILED_WIDTH_SHARES, going up (`step` 1) or
- * down (-1) and wrapping around, that `fits`. Null when none fits.
+ * Super+R on a window alone on its page: the next width share of the page
+ * (1/3, 1/2, 2/3, full). It skips a share under the min width. The window
+ * sits on the left; the next window opens in the space on the right.
+ */
+export function cycleSoloShare(
+  share: number,
+  step: 1 | -1,
+  area: TileRect,
+  limits: TileLimits = DEFAULT_TILE_LIMITS,
+): number {
+  const next = nextShare(
+    share,
+    step,
+    (candidate) => area.width * candidate >= limits.minWidth,
+    TILED_SOLO_SHARES,
+  );
+  return next ?? share;
+}
+
+/**
+ * Super+Minus / Super+Equal on a window alone on its page: `delta` more of
+ * the page width, between the min width and the full width.
+ */
+export function resizeSoloShare(
+  share: number,
+  delta: number,
+  area: TileRect,
+  limits: TileLimits = DEFAULT_TILE_LIMITS,
+): number {
+  if (area.width <= 0) {
+    return share;
+  }
+  const low = Math.min(1, limits.minWidth / area.width);
+  return Math.min(1, Math.max(low, share + delta));
+}
+
+/**
+ * The share after `share` in `shares`, going up (`step` 1) or down (-1)
+ * and wrapping around, that `fits`. Null when none fits.
  */
 function nextShare(
   share: number,
   step: 1 | -1,
   fits: (candidate: number) => boolean,
+  shares: number[] = TILED_WIDTH_SHARES,
 ): number | null {
   const same = (a: number, b: number) => Math.abs(a - b) < 0.01;
-  const ascending = [...TILED_WIDTH_SHARES];
+  const ascending = [...shares];
   const ahead =
     step === 1
       ? ascending.filter((s) => s > share && !same(s, share))

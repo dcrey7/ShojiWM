@@ -33,14 +33,17 @@ import {
   flip as flipTile,
   hasLeaf,
   insert as insertTile,
+  cycleSoloShare,
   cycleWidthShare,
   layout as tileLayout,
   leafIds,
   neighbour as tileNeighbour,
   remove as removeTile,
   resize as resizeTileSplit,
+  resizeSoloShare,
   siblingLeaf,
   swap as swapTiles,
+  TILED_MIN_WIDTH,
   type TileDirection,
   type TileRect,
   type TileTree,
@@ -204,6 +207,11 @@ export const TILE_ANIMATION_DURATION = seconds(0.5);
 // A workspace switch slides like the tile strip scrolls: same duration and
 // easing (WINDOW_MANAGEMENT_EASING) as a tile move.
 const WORKSPACE_SWITCH_ANIMATION_DURATION = TILE_ANIMATION_DURATION;
+/**
+ * A full tiled page sends a new window to a new workspace. That slide is
+ * short and crisp; the window opens (Magic Lamp) only after it.
+ */
+const WORKSPACE_OVERFLOW_SLIDE_DURATION = seconds(0.22);
 /** A sliding workspace fades only down to this opacity (a light fade). */
 const WORKSPACE_SLIDE_MIN_OPACITY = 0.5;
 const WORKSPACE_GESTURE_FINGERS = 3;
@@ -817,6 +825,9 @@ export class HybridWindowManager {
    */
   private readonly presentedWindowIds = new Set<string>();
 
+  /** New windows sent to a new workspace, and when their slide ends. */
+  private readonly overflowOpenAtMs = new Map<string, number>();
+
   /**
    * When each window was last restored from minimized, by wall clock.
    *
@@ -871,6 +882,12 @@ export class HybridWindowManager {
         workspace.index,
       );
       workspace = overflowWorkspace;
+      // The window stays hidden during the slide and opens after it.
+      overflowWorkspace.holdHidden(window.id);
+      this.overflowOpenAtMs.set(
+        window.id,
+        Date.now() + WORKSPACE_OVERFLOW_SLIDE_DURATION,
+      );
     }
     if (workspace) {
       restoredExistingWindow = workspace.addWindow(window, options);
@@ -886,7 +903,9 @@ export class HybridWindowManager {
       if (overflowWorkspace) {
         // The usual workspace slide. It focuses the new window: addWindow
         // made it the active window of its workspace.
-        this.switchWorkspaceTo(overflowWorkspace.monitor, overflowWorkspace.index);
+        this.switchWorkspaceTo(overflowWorkspace.monitor, overflowWorkspace.index, {
+          duration: WORKSPACE_OVERFLOW_SLIDE_DURATION,
+        });
       }
     } else {
       window.state[WINDOW_STATE_RECT].set(this.naturalRootRect(window));
@@ -1058,7 +1077,25 @@ export class HybridWindowManager {
     const restoredExistingWindow =
       initialized.restoredExistingWindow || restoredDuringInitialConfigure;
     const workspace = initialized.workspace;
-    if (!restoredExistingWindow) {
+    const openAtMs = this.overflowOpenAtMs.get(window.id);
+    this.overflowOpenAtMs.delete(window.id);
+    if (!restoredExistingWindow && openAtMs !== undefined) {
+      // Overflow to a new workspace: open once the slide has ended.
+      const open = () => {
+        const owner = this.findWorkspaceForWindow(window);
+        if (!owner) {
+          return;
+        }
+        owner.releaseHidden(window);
+        scheduleOpenAnimation(window);
+      };
+      const delay = openAtMs - Date.now();
+      if (delay > 0) {
+        setTimeout(open, delay);
+      } else {
+        open();
+      }
+    } else if (!restoredExistingWindow) {
       scheduleOpenAnimation(window);
     }
     hotReloadDebug("hybrid-first-commit", {
@@ -2150,7 +2187,12 @@ export class HybridWindowManager {
   public switchWorkspaceTo(
     monitor: string,
     targetIndex: number,
-    options: { focusActiveAfter?: boolean; instant?: boolean } = {},
+    options: {
+      focusActiveAfter?: boolean;
+      instant?: boolean;
+      /** The slide length; the usual workspace slide when not set. */
+      duration?: number;
+    } = {},
   ) {
     this.workspaceGesture = null;
     this.syncWorkspaces();
@@ -2191,6 +2233,7 @@ export class HybridWindowManager {
         fromOpacity: 1,
         toOpacity: WORKSPACE_SLIDE_MIN_OPACITY,
         visibleAfter: false,
+        duration: options.duration,
       });
       toWorkspace.prepareWorkspaceTransition(
         direction * distance,
@@ -2203,6 +2246,7 @@ export class HybridWindowManager {
         fromOpacity: WORKSPACE_SLIDE_MIN_OPACITY,
         toOpacity: 1,
         visibleAfter: true,
+        duration: options.duration,
       });
     }
     // Callers that explicitly want to focus a *different* window after the
@@ -3945,6 +3989,10 @@ export class Workspace {
   >();
   private activeWindowId: string | null = null;
   private visibilityAnimationToken = 0;
+  /** New windows kept hidden until they open (see holdHidden). */
+  private readonly heldHiddenIds = new Set<string>();
+  /** Tiled mode: the share of the page width a lone window takes (Super+R). */
+  private soloShare = 1;
   private draggingWindowId: string | null = null;
   // Layout slot reserved for the tile being dragged (the gap opened in the row).
   // Captured during applyLayout so the bar can preview where the tile will land.
@@ -4708,8 +4756,30 @@ export class Workspace {
       }
       window.state[WINDOW_STATE_WORKSPACE_VISIBLE].set(visible);
       window.state[WINDOW_STATE_WORKSPACE_OFFSET_X].set(0);
-      window.state[WINDOW_STATE_WORKSPACE_OPACITY].set(visible ? 1 : 0);
+      window.state[WINDOW_STATE_WORKSPACE_OPACITY].set(
+        visible && !this.heldHiddenIds.has(window.id) ? 1 : 0,
+      );
     }
+  }
+
+  /** Keep a new window hidden, through workspace slides, until it opens. */
+  public holdHidden(windowId: string) {
+    this.heldHiddenIds.add(windowId);
+  }
+
+  /** Show a window that `holdHidden` kept hidden. */
+  public releaseHidden(window: WaylandWindow) {
+    if (!this.heldHiddenIds.delete(window.id)) {
+      return;
+    }
+    cancelWorkspaceVisualAnimation(window);
+    window.state[WINDOW_STATE_WORKSPACE_OFFSET_X].set(0);
+    window.state[WINDOW_STATE_WORKSPACE_OPACITY].set(this.isActive() ? 1 : 0);
+  }
+
+  /** A window that a workspace slide must not show. */
+  private hiddenInSlide(window: WaylandWindow): boolean {
+    return this.heldHiddenIds.has(window.id) || this.isOffScreen(window);
   }
 
   /** `setVisible` that also stops a running workspace slide/fade. */
@@ -4751,7 +4821,7 @@ export class Workspace {
       window.state[WINDOW_STATE_WORKSPACE_VISIBLE].set(true);
       window.state[WINDOW_STATE_WORKSPACE_OFFSET_X].set(offsetX);
       window.state[WINDOW_STATE_WORKSPACE_OPACITY].set(
-        this.isOffScreen(window) ? 0 : opacity,
+        this.hiddenInSlide(window) ? 0 : opacity,
       );
     }
   }
@@ -4770,7 +4840,7 @@ export class Workspace {
       window.state[WINDOW_STATE_WORKSPACE_VISIBLE].set(true);
       window.state[WINDOW_STATE_WORKSPACE_OFFSET_X].set(offsetX);
       window.state[WINDOW_STATE_WORKSPACE_OPACITY].set(
-        this.isOffScreen(window) ? 0 : opacity,
+        this.hiddenInSlide(window) ? 0 : opacity,
       );
     }
   }
@@ -4781,7 +4851,10 @@ export class Workspace {
     fromOpacity: number;
     toOpacity: number;
     visibleAfter: boolean;
+    /** The slide length; the usual workspace slide when not set. */
+    duration?: number;
   }) {
+    const duration = options.duration ?? WORKSPACE_SWITCH_ANIMATION_DURATION;
     const token = this.visibilityAnimationToken + 1;
     this.visibilityAnimationToken = token;
 
@@ -4814,15 +4887,15 @@ export class Workspace {
       // already true), but for to-workspace's second call this keeps
       // the same invariant in case prepareWorkspaceTransition's hold
       // animation has already completed (e.g., rapid switches).
-      const offScreen = this.isOffScreen(window);
+      const hidden = this.hiddenInSlide(window);
       scheduleWorkspaceVisualAnimation(
         window,
         options.fromOffsetX,
         options.toOffsetX,
-        offScreen ? 0 : options.fromOpacity,
-        offScreen ? 0 : options.toOpacity,
+        hidden ? 0 : options.fromOpacity,
+        hidden ? 0 : options.toOpacity,
         WINDOW_MANAGEMENT_EASING,
-        WORKSPACE_SWITCH_ANIMATION_DURATION,
+        duration,
       );
       window.state[WINDOW_STATE_WORKSPACE_VISIBLE].set(true);
     }
@@ -4838,10 +4911,7 @@ export class Workspace {
           this.setVisible(options.visibleAfter);
         });
       },
-      Math.max(
-        0,
-        WORKSPACE_SWITCH_ANIMATION_DURATION - VISIBILITY_COMMIT_BEFORE_END_MS,
-      ),
+      Math.max(0, duration - VISIBILITY_COMMIT_BEFORE_END_MS),
     );
   }
 
@@ -5169,6 +5239,10 @@ export class Workspace {
     viewportRect: ManagedWindowRect,
   ): { window: WaylandWindow; rect: ManagedWindowRect }[] {
     const area = plainRect(viewportRect);
+    if (this.tree?.kind === "leaf" && this.soloShare < 1) {
+      // A lone window with a smaller width (Super+R) sits on the left.
+      area.width = Math.round(area.width * this.soloShare);
+    }
     const cells = tileLayout(this.tree, area, TILE_GAP);
     return tileable.map((window) => {
       const rect = window.state[WINDOW_STATE_FULLSCREEN]()
@@ -5224,6 +5298,7 @@ export class Workspace {
       tree = this.rebuiltTree(tree);
     }
     const missing = tileable.filter((window) => !hasLeaf(tree, window.id));
+    const wasSolo = tree?.kind === "leaf";
     if (missing.length > 0) {
       const area = this.tiledArea();
       const recentFocusOrder = this.recentFocusOrder();
@@ -5238,6 +5313,20 @@ export class Workspace {
         // The next one splits as if this one took the focus (spec §6).
         focusedId = window.id;
       }
+      // A lone window with a smaller width keeps it: the second window
+      // takes the free space on the right, when that is wide enough.
+      if (
+        wasSolo &&
+        this.soloShare < 1 &&
+        tree?.kind === "split" &&
+        tree.direction === "row" &&
+        (area.width - TILE_GAP) * (1 - this.soloShare) >= TILED_MIN_WIDTH
+      ) {
+        tree = { ...tree, ratio: this.soloShare };
+      }
+    }
+    if (tree?.kind !== "leaf") {
+      this.soloShare = 1;
     }
     this.tree = tree;
   }
@@ -5370,6 +5459,12 @@ export class Workspace {
     if (!id || !window) {
       return false;
     }
+    if (this.tree?.kind === "leaf") {
+      return this.setSoloShare(
+        window,
+        resizeSoloShare(this.soloShare, delta, this.tiledArea()),
+      );
+    }
     const next = resizeTileSplit(
       this.tree,
       id,
@@ -5400,6 +5495,12 @@ export class Workspace {
     if (!id || !window) {
       return false;
     }
+    if (this.tree?.kind === "leaf") {
+      return this.setSoloShare(
+        window,
+        cycleSoloShare(this.soloShare, step, this.tiledArea()),
+      );
+    }
     const next = cycleWidthShare(
       this.tree,
       id,
@@ -5411,6 +5512,16 @@ export class Workspace {
       return false;
     }
     this.tree = next;
+    this.commitTreeChange(window);
+    return true;
+  }
+
+  /** A lone window takes `share` of the page width, on the left. */
+  private setSoloShare(window: WaylandWindow, share: number): boolean {
+    if (Math.abs(share - this.soloShare) < 1e-9) {
+      return false;
+    }
+    this.soloShare = share;
     this.commitTreeChange(window);
     return true;
   }

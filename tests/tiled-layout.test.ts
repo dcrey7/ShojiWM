@@ -4,6 +4,7 @@ import {
   buildTree,
   canInsert,
   chooseLeafToSplit,
+  cycleSoloShare,
   cycleWidthShare,
   flip,
   insert,
@@ -12,6 +13,7 @@ import {
   neighbour,
   remove,
   resize,
+  resizeSoloShare,
   siblingLeaf,
   swap,
   TILED_RESIZE_STEP,
@@ -233,4 +235,20 @@ test("cycleWidthShare skips shares under the min size", () => {
   // Portrait: no side-by-side split at all.
   const rows = open(PORTRAIT, 2);
   assert.equal(cycleWidthShare(rows, "1", 1, PORTRAIT, GAP), rows);
+});
+
+test("cycleSoloShare: a lone window steps 1/3, 1/2, 2/3, full", () => {
+  assert.equal(cycleSoloShare(1, 1, WIDE), 1 / 3);
+  assert.equal(cycleSoloShare(1 / 3, 1, WIDE), 1 / 2);
+  assert.equal(cycleSoloShare(1 / 2, 1, WIDE), 2 / 3);
+  assert.equal(cycleSoloShare(2 / 3, 1, WIDE), 1);
+  assert.equal(cycleSoloShare(1, -1, WIDE), 2 / 3);
+  // 1366 wide: 1/3 is 455 px, under 600, so it is skipped.
+  assert.equal(cycleSoloShare(1, 1, SMALL), 1 / 2);
+});
+
+test("resizeSoloShare stays between the min width and full", () => {
+  assert.equal(resizeSoloShare(1, 0.05, WIDE), 1);
+  assert.ok(Math.abs(resizeSoloShare(1, -0.05, WIDE) - 0.95) < 1e-9);
+  assert.equal(resizeSoloShare(0.25, -0.05, WIDE), 600 / 2560);
 });
