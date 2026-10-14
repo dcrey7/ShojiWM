@@ -27,6 +27,38 @@ import {
 import type { ManagedWindowRect, WindowSizeConstraints } from "shoji_wm/types";
 import { playRectAnimation, stopRectAnimation } from "./window-animation";
 import { magicLampStart, magicLampStop } from "./magic-lamp";
+import {
+  canInsert as canInsertTile,
+  flip as flipTile,
+  hasLeaf,
+  insert as insertTile,
+  layout as tileLayout,
+  leafIds,
+  neighbour as tileNeighbour,
+  remove as removeTile,
+  resize as resizeTileSplit,
+  siblingLeaf,
+  swap as swapTiles,
+  type TileDirection,
+  type TileRect,
+  type TileTree,
+} from "./tiled-layout";
+
+/**
+ * How a workspace places its windows:
+ * - "tiled": every window on one screen, in a split tree (./tiled-layout.ts).
+ * - "scrolling": a row of columns that scrolls sideways.
+ * - "floating": the windows go where the user puts them.
+ * "tiled" and "scrolling" both tile; the code calls them "tiling" modes.
+ */
+export type WorkspaceMode = "tiled" | "scrolling" | "floating";
+export type TilingMode = Exclude<WorkspaceMode, "floating">;
+
+/** Super+Space goes through the modes in this order. */
+const WORKSPACE_MODE_CYCLE: WorkspaceMode[] = ["tiled", "scrolling", "floating"];
+
+/** What a tiled-mode key did: acted, hit the screen edge, or found nothing. */
+export type TiledKeyResult = "done" | "edge" | "none";
 
 export type SnapZone =
   | "maximize"
@@ -78,8 +110,8 @@ export const WINDOW_STATE_WORKSPACE_VISIBLE = createWindowState<boolean>(
     default: true,
   },
 );
-export const WINDOW_STATE_WORKSPACE_OFFSET_Y = createWindowState<number>(
-  "workspaceOffsetY",
+export const WINDOW_STATE_WORKSPACE_OFFSET_X = createWindowState<number>(
+  "workspaceOffsetX",
   {
     default: 0,
   },
@@ -167,7 +199,11 @@ const WINDOW_CLOSE_EASING = cubicBezier(0.3, -0.3, 0, 1);
 /** Offset between floating windows that would otherwise open on the same spot. */
 const FLOATING_CASCADE_STEP = 32;
 export const TILE_ANIMATION_DURATION = seconds(0.5);
-const WORKSPACE_SWITCH_ANIMATION_DURATION = seconds(0.5);
+// A workspace switch slides like the tile strip scrolls: same duration and
+// easing (WINDOW_MANAGEMENT_EASING) as a tile move.
+const WORKSPACE_SWITCH_ANIMATION_DURATION = TILE_ANIMATION_DURATION;
+/** A sliding workspace fades only down to this opacity (a light fade). */
+const WORKSPACE_SLIDE_MIN_OPACITY = 0.5;
 const WORKSPACE_GESTURE_FINGERS = 3;
 const WORKSPACE_GESTURE_AXIS_LOCK_PX = 8;
 const WORKSPACE_GESTURE_THRESHOLD_RATIO = 0.22;
@@ -276,6 +312,9 @@ interface WorkspaceSnapshot {
   monitor: string;
   index: number;
   isTiled: boolean;
+  /** Missing in snapshots from before the tiled mode: then isTiled decides. */
+  mode?: WorkspaceMode;
+  lastTilingMode?: TilingMode;
   activeWindowId: string | null;
   scrollOffset: number;
   windows: WorkspaceWindowSnapshot[];
@@ -310,6 +349,7 @@ export interface WorkspacesViewWorkspace {
   index: number;
   windowCount: number;
   isTiled: boolean;
+  mode: WorkspaceMode;
   active: boolean;
   windows: WorkspacesViewWindow[];
 }
@@ -332,8 +372,8 @@ interface WorkspaceGestureState {
   distance: number;
   fromWorkspace: Workspace;
   toWorkspace: Workspace | null;
-  fromOffsetY: number;
-  toOffsetY: number;
+  fromOffsetX: number;
+  toOffsetX: number;
   fromOpacity: number;
   toOpacity: number;
 }
@@ -489,6 +529,8 @@ export class HybridWindowManager {
   } | null = null;
   private workspaceGesture: WorkspaceGestureState | null = null;
   private workspaceGestureMode: WorkspaceGestureMode | null = null;
+  /** The finger axis that drives a workspace switch gesture. */
+  private workspaceGestureAxis: "x" | "y" = "y";
   private workspaceScrollGestureRectAnimationsCancelled = false;
   /**
    * Snap position the active scroll gesture is currently caught on, with the
@@ -810,8 +852,24 @@ export class HybridWindowManager {
     }
 
     let restoredExistingWindow = false;
-    const workspace =
-      this.findWorkspaceRestoringWindow(window) ?? this.getCurrentWorkspace();
+    const restoringWorkspace = this.findWorkspaceRestoringWindow(window);
+    let workspace = restoringWorkspace ?? this.getCurrentWorkspace();
+    // Tiled mode, rule 3: when the page is full, the new window opens on a
+    // new, empty workspace right after this one, and the view goes there.
+    let overflowWorkspace: Workspace | undefined;
+    if (
+      workspace &&
+      !restoringWorkspace &&
+      workspace.mode === "tiled" &&
+      workspace.shouldTile(window) &&
+      !workspace.canTileNewWindow()
+    ) {
+      overflowWorkspace = this.insertEmptyWorkspaceAfter(
+        workspace.monitor,
+        workspace.index,
+      );
+      workspace = overflowWorkspace;
+    }
     if (workspace) {
       restoredExistingWindow = workspace.addWindow(window, options);
       if (
@@ -823,6 +881,11 @@ export class HybridWindowManager {
       }
       this.applyWorkspaceStackPolicy(workspace);
       this.syncWorkspaceVisibility();
+      if (overflowWorkspace) {
+        // The usual workspace slide. It focuses the new window: addWindow
+        // made it the active window of its workspace.
+        this.switchWorkspaceTo(overflowWorkspace.monitor, overflowWorkspace.index);
+      }
     } else {
       window.state[WINDOW_STATE_RECT].set(this.naturalRootRect(window));
     }
@@ -1058,6 +1121,9 @@ export class HybridWindowManager {
       if (workspace?.isTiled && workspace.isActive()) {
         workspace.focusWindow(window);
         this.applyWorkspaceStackPolicy(workspace);
+      } else if (workspace && !workspace.isTiled) {
+        // A switch back to this workspace focuses this window again.
+        workspace.rememberFocusedWindow(window);
       }
     }
   }
@@ -1612,26 +1678,48 @@ export class HybridWindowManager {
     return true;
   }
 
+  /**
+   * Super+S: floating on, or off again. Off goes back to the tiling mode
+   * the workspace had before (tiled or scrolling).
+   */
   public toggleCurrentWorkspaceTiling() {
-    withManagedWindowOnlySSDRebuildSuppressed(() => {
-      const workspace = this.getCurrentWorkspace();
-      if (!workspace) {
-        return;
-      }
-      workspace.setTiled(!workspace.isTiled);
-      this.applyWorkspaceStackPolicy(workspace);
-      this.restoreFloatingFocusStacking(workspace);
-    });
+    const workspace = this.getCurrentWorkspace();
+    if (workspace) {
+      this.setWorkspaceMode(workspace, this.toggledFloatingMode(workspace));
+    }
   }
 
   public toggleWorkspaceTilingForMonitor(monitor: string) {
+    this.syncWorkspaces();
+    const workspace = this.workspaceForMonitor(monitor);
+    if (workspace) {
+      this.setWorkspaceMode(workspace, this.toggledFloatingMode(workspace));
+    }
+  }
+
+  /** Super+Space: tiled -> scrolling -> floating -> tiled. */
+  public cycleCurrentWorkspaceMode() {
+    const workspace = this.getCurrentWorkspace();
+    if (!workspace) {
+      return;
+    }
+    const index = WORKSPACE_MODE_CYCLE.indexOf(workspace.mode);
+    const next = WORKSPACE_MODE_CYCLE[(index + 1) % WORKSPACE_MODE_CYCLE.length];
+    this.setWorkspaceMode(workspace, next);
+  }
+
+  /** The mode of the current workspace. */
+  public currentWorkspaceMode(): WorkspaceMode {
+    return this.getCurrentWorkspace()?.mode ?? "tiled";
+  }
+
+  private toggledFloatingMode(workspace: Workspace): WorkspaceMode {
+    return workspace.isTiled ? "floating" : workspace.lastTilingLayout;
+  }
+
+  private setWorkspaceMode(workspace: Workspace, mode: WorkspaceMode) {
     withManagedWindowOnlySSDRebuildSuppressed(() => {
-      this.syncWorkspaces();
-      const workspace = this.workspaceForMonitor(monitor);
-      if (!workspace) {
-        return;
-      }
-      workspace.setTiled(!workspace.isTiled);
+      workspace.setMode(mode);
       this.applyWorkspaceStackPolicy(workspace);
       this.restoreFloatingFocusStacking(workspace);
     });
@@ -1681,40 +1769,40 @@ export class HybridWindowManager {
 
   /** Move the focused tile to the bottom of the column on its left. */
   public stackFocusedIntoLeftColumn() {
-    this.runOnTiledWorkspace((workspace) =>
+    this.runOnScrollingWorkspace((workspace) =>
       workspace.stackFocusedIntoLeftColumn(),
     );
   }
 
   /** Pop the focused tile out into its own column after its current one. */
   public unstackFocusedWindow() {
-    this.runOnTiledWorkspace((workspace) => workspace.unstackFocusedWindow());
+    this.runOnScrollingWorkspace((workspace) => workspace.unstackFocusedWindow());
   }
 
   /** Move focus up (-1) or down (1) inside the focused column. */
   public focusInColumn(direction: -1 | 1) {
-    this.runOnTiledWorkspace((workspace) =>
+    this.runOnScrollingWorkspace((workspace) =>
       workspace.focusInColumn(direction),
     );
   }
 
   /** Next (1) or previous (-1) width preset for the focused column. */
   public cycleFocusedColumnWidth(direction: -1 | 1) {
-    this.runOnTiledWorkspace((workspace) =>
+    this.runOnScrollingWorkspace((workspace) =>
       workspace.cycleFocusedColumnWidth(direction),
     );
   }
 
   /** Make the focused column `delta` px wider (or narrower when negative). */
   public resizeFocusedColumn(delta: number) {
-    this.runOnTiledWorkspace((workspace) =>
+    this.runOnScrollingWorkspace((workspace) =>
       workspace.resizeFocusedColumn(delta),
     );
   }
 
   /** Move the focused tile up (-1) or down (1) inside its column. */
   public moveFocusedInColumn(direction: -1 | 1) {
-    this.runOnTiledWorkspace((workspace) =>
+    this.runOnScrollingWorkspace((workspace) =>
       workspace.moveFocusedInColumn(direction),
     );
   }
@@ -1791,14 +1879,101 @@ export class HybridWindowManager {
     };
   }
 
-  private runOnTiledWorkspace(action: (workspace: Workspace) => boolean) {
+  /** Run a column action. Columns exist only in the scrolling mode. */
+  private runOnScrollingWorkspace(action: (workspace: Workspace) => boolean) {
     withManagedWindowOnlySSDRebuildSuppressed(() => {
       const workspace = this.getCurrentWorkspace();
-      if (!workspace?.isTiled || !action(workspace)) {
+      if (workspace?.mode !== "scrolling" || !action(workspace)) {
         return;
       }
       this.applyWorkspaceStackPolicy(workspace);
     });
+  }
+
+  /** Run a tree action. The tree exists only in the tiled mode. */
+  private runOnTiledLayout(action: (workspace: Workspace) => boolean) {
+    withManagedWindowOnlySSDRebuildSuppressed(() => {
+      const workspace = this.getCurrentWorkspace();
+      if (workspace?.mode !== "tiled" || !action(workspace)) {
+        return;
+      }
+      this.applyWorkspaceStackPolicy(workspace);
+    });
+  }
+
+  /**
+   * Tiled mode, Super+arrow: focus the window in that direction. At the
+   * left or right screen edge, go to the previous or next workspace.
+   */
+  public focusTiledDirection(direction: TileDirection) {
+    const workspace = this.getCurrentWorkspace();
+    if (workspace?.mode !== "tiled") {
+      return;
+    }
+    const result = withManagedWindowOnlySSDRebuildSuppressed(() => {
+      const keyResult = workspace.focusTiledNeighbour(direction);
+      this.applyWorkspaceStackPolicy(workspace);
+      return keyResult;
+    });
+    if (result === "edge" && (direction === "left" || direction === "right")) {
+      this.switchWorkspace(direction === "left" ? -1 : 1);
+    }
+  }
+
+  /**
+   * Tiled mode, Super+Shift+arrow: swap the focused window with the window
+   * in that direction. At the left or right screen edge, move it to the
+   * previous or next workspace.
+   */
+  public swapTiledDirection(direction: TileDirection) {
+    const workspace = this.getCurrentWorkspace();
+    if (workspace?.mode !== "tiled") {
+      return;
+    }
+    const result = withManagedWindowOnlySSDRebuildSuppressed(() => {
+      const keyResult = workspace.swapTiledNeighbour(direction);
+      this.applyWorkspaceStackPolicy(workspace);
+      return keyResult;
+    });
+    if (result === "edge" && (direction === "left" || direction === "right")) {
+      this.moveFocusedWindowToWorkspace(direction === "left" ? -1 : 1);
+    }
+  }
+
+  /** Tiled mode, Super+J: flip the split of the focused window. */
+  public flipFocusedSplit() {
+    this.runOnTiledLayout((workspace) => workspace.flipFocusedSplit());
+  }
+
+  /** Tiled mode, Super+Minus / Super+Equal: move the focused window's divider. */
+  public resizeFocusedSplit(delta: number) {
+    this.runOnTiledLayout((workspace) => workspace.resizeFocusedSplit(delta));
+  }
+
+  /**
+   * An empty tiled workspace right after workspace `index` of `monitor`.
+   * An empty tiled workspace already there is used. Else the workspaces
+   * after `index` move up by one to make room for a new one.
+   */
+  private insertEmptyWorkspaceAfter(monitor: string, index: number): Workspace {
+    const next = this.workspaces.get(workspaceKey(monitor, index + 1));
+    if (next && next.windowCount() === 0 && next.mode === "tiled") {
+      return next;
+    }
+    const later = Array.from(this.workspaces.values())
+      .filter((workspace) => workspace.monitor === monitor && workspace.index > index)
+      .sort((a, b) => b.index - a.index);
+    for (const workspace of later) {
+      this.workspaces.delete(workspaceKey(monitor, workspace.index));
+      workspace.index += 1;
+      this.workspaces.set(workspaceKey(monitor, workspace.index), workspace);
+    }
+    const active = this.activeWorkspaceByMonitor.get(monitor) ?? 1;
+    if (active > index) {
+      this.activeWorkspaceByMonitor.set(monitor, active + 1);
+    }
+    // ensureWorkspace makes a new workspace, and new workspaces start tiled.
+    return this.ensureWorkspace(monitor, index + 1);
   }
 
   public moveFocusedWindowToWorkspace(direction: -1 | 1) {
@@ -1822,10 +1997,22 @@ export class HybridWindowManager {
         return;
       }
 
-      const targetWorkspace = this.ensureWorkspace(
+      let targetWorkspace = this.ensureWorkspace(
         fromWorkspace.monitor,
         targetIndex,
       );
+      // A full tiled workspace takes no more windows (rule 3): a new
+      // workspace between the two takes the window.
+      if (
+        targetWorkspace.mode === "tiled" &&
+        fromWorkspace.shouldTile(window) &&
+        !targetWorkspace.canTileNewWindow()
+      ) {
+        targetWorkspace = this.insertEmptyWorkspaceAfter(
+          fromWorkspace.monitor,
+          Math.min(fromWorkspace.index, targetWorkspace.index),
+        );
+      }
       const moved = fromWorkspace.takeWindowForMove(window);
       if (!moved) {
         return;
@@ -1834,7 +2021,7 @@ export class HybridWindowManager {
       targetWorkspace.addMovedWindow(window, moved.snapshot);
       fromWorkspace.applyLayout();
       targetWorkspace.applyLayout();
-      this.switchWorkspaceTo(fromWorkspace.monitor, targetIndex, {
+      this.switchWorkspaceTo(fromWorkspace.monitor, targetWorkspace.index, {
         focusActiveAfter: false,
       });
       if (targetWorkspace.isTiled) {
@@ -1989,19 +2176,24 @@ export class HybridWindowManager {
       toWorkspace.showInstantly(true);
       toWorkspace.applyLayout({ animate: false });
     } else {
+      // The workspaces sit in one row, by index. A higher index comes in
+      // from the right and pushes the old workspace out to the left.
       fromWorkspace.animateWorkspaceTransition({
-        fromOffsetY: 0,
-        toOffsetY: -direction * distance,
+        fromOffsetX: 0,
+        toOffsetX: -direction * distance,
         fromOpacity: 1,
-        toOpacity: 0,
+        toOpacity: WORKSPACE_SLIDE_MIN_OPACITY,
         visibleAfter: false,
       });
-      toWorkspace.prepareWorkspaceTransition(direction * distance, 0);
+      toWorkspace.prepareWorkspaceTransition(
+        direction * distance,
+        WORKSPACE_SLIDE_MIN_OPACITY,
+      );
       toWorkspace.applyLayout();
       toWorkspace.animateWorkspaceTransition({
-        fromOffsetY: direction * distance,
-        toOffsetY: 0,
-        fromOpacity: 0,
+        fromOffsetX: direction * distance,
+        toOffsetX: 0,
+        fromOpacity: WORKSPACE_SLIDE_MIN_OPACITY,
         toOpacity: 1,
         visibleAfter: true,
       });
@@ -2056,6 +2248,7 @@ export class HybridWindowManager {
         index: workspace.index,
         windowCount: workspace.windowCount(),
         isTiled: workspace.isTiled,
+        mode: workspace.mode,
         active,
         windows,
       });
@@ -2075,7 +2268,9 @@ export class HybridWindowManager {
           workspaces.push({
             index: active,
             windowCount: 0,
-            isTiled: false,
+            // An empty workspace that does not exist yet starts tiled.
+            isTiled: true,
+            mode: "tiled",
             active: true,
             windows: [],
           });
@@ -2347,6 +2542,7 @@ export class HybridWindowManager {
         this.naturalRootRect,
         (window) => this.maximizedRectForWindow(window, monitor),
         (monitor) => this.getActiveWorkspaceIndex(monitor),
+        () => this.listWindowsByRecentUse().map((window) => window.id),
       );
       this.workspaces.set(key, workspace);
     }
@@ -2381,8 +2577,16 @@ export class HybridWindowManager {
       return null;
     }
 
-    this.workspaceGestureMode =
-      scaledAbsX > absY ? "workspace-scroll" : "workspace-switch";
+    // A sideways swipe scrolls the tile strip of a scrolling workspace. On
+    // the other workspaces it switches workspaces and follows the fingers,
+    // like the row of workspaces it moves. An up / down swipe always
+    // switches workspaces.
+    const horizontal = scaledAbsX > absY;
+    const scrolls =
+      horizontal &&
+      this.workspaceForMonitor(this.gestureMonitor(event))?.mode === "scrolling";
+    this.workspaceGestureAxis = horizontal ? "x" : "y";
+    this.workspaceGestureMode = scrolls ? "workspace-scroll" : "workspace-switch";
     if (this.workspaceGestureMode === "workspace-scroll") {
       this.workspaceScrollGestureRectAnimationsCancelled = false;
     }
@@ -2496,14 +2700,18 @@ export class HybridWindowManager {
     }
 
     const distance = Math.max(1, this.workspaceTransitionDistance(monitor));
-    const scaledTotalY =
-      event.totalY * this.workspaceGestureSpeed.workspaceSwitchFactor;
-    const rawOffsetY = clamp(scaledTotalY, -distance, distance);
-    if (Math.abs(rawOffsetY) < 1) {
+    // Fingers to the left (or up) go to the next workspace: the old one
+    // follows the fingers out to the left.
+    const fingerTotal =
+      this.workspaceGestureAxis === "x" ? event.totalX : event.totalY;
+    const scaledTotal =
+      fingerTotal * this.workspaceGestureSpeed.workspaceSwitchFactor;
+    const rawOffsetX = clamp(scaledTotal, -distance, distance);
+    if (Math.abs(rawOffsetX) < 1) {
       return;
     }
 
-    const direction: -1 | 1 = rawOffsetY < 0 ? 1 : -1;
+    const direction: -1 | 1 = rawOffsetX < 0 ? 1 : -1;
     const currentIndex = this.activeWorkspaceByMonitor.get(monitor) ?? 1;
     const nextIndex = currentIndex + direction;
     const fromWorkspace = this.ensureWorkspace(monitor, currentIndex);
@@ -2525,8 +2733,8 @@ export class HybridWindowManager {
           workspace.setVisible(workspace.isActive());
         }
       }
-      const resistanceOffsetY = rawOffsetY * 0.25;
-      fromWorkspace.setWorkspaceGestureVisual(resistanceOffsetY, 1);
+      const resistanceOffsetX = rawOffsetX * 0.25;
+      fromWorkspace.setWorkspaceGestureVisual(resistanceOffsetX, 1);
       this.workspaceGesture = {
         monitor,
         currentIndex,
@@ -2534,18 +2742,19 @@ export class HybridWindowManager {
         distance,
         fromWorkspace,
         toWorkspace: null,
-        fromOffsetY: resistanceOffsetY,
-        toOffsetY: direction * distance,
+        fromOffsetX: resistanceOffsetX,
+        toOffsetX: direction * distance,
         fromOpacity: 1,
         toOpacity: 0,
       };
       return;
     }
 
-    const progress = clamp(Math.abs(rawOffsetY) / distance, 0, 1);
-    const toOffsetY = direction * distance + rawOffsetY;
-    const fromOpacity = 1 - progress;
-    const toOpacity = progress;
+    const progress = clamp(Math.abs(rawOffsetX) / distance, 0, 1);
+    const toOffsetX = direction * distance + rawOffsetX;
+    const fade = 1 - WORKSPACE_SLIDE_MIN_OPACITY;
+    const fromOpacity = 1 - progress * fade;
+    const toOpacity = WORKSPACE_SLIDE_MIN_OPACITY + progress * fade;
 
     if (targetChanged) {
       for (const workspace of this.workspaces.values()) {
@@ -2561,8 +2770,8 @@ export class HybridWindowManager {
       toWorkspace.applyLayout({ animate: false });
     }
 
-    fromWorkspace.setWorkspaceGestureVisual(rawOffsetY, fromOpacity);
-    toWorkspace.setWorkspaceGestureVisual(toOffsetY, toOpacity);
+    fromWorkspace.setWorkspaceGestureVisual(rawOffsetX, fromOpacity);
+    toWorkspace.setWorkspaceGestureVisual(toOffsetX, toOpacity);
     this.applyWorkspaceStackPolicy(fromWorkspace);
     this.applyWorkspaceStackPolicy(toWorkspace);
 
@@ -2573,8 +2782,8 @@ export class HybridWindowManager {
       distance,
       fromWorkspace,
       toWorkspace,
-      fromOffsetY: rawOffsetY,
-      toOffsetY,
+      fromOffsetX: rawOffsetX,
+      toOffsetX,
       fromOpacity,
       toOpacity,
     };
@@ -2587,15 +2796,16 @@ export class HybridWindowManager {
       return;
     }
 
+    const horizontal = this.workspaceGestureAxis === "x";
+    const fingerTotal = horizontal ? event.totalX : event.totalY;
+    const fingerVelocity = horizontal ? event.velocityX : event.velocityY;
     const shouldCommit =
       event.phase === "end" &&
       gesture.toWorkspace !== null &&
-      (Math.abs(
-        event.totalY * this.workspaceGestureSpeed.workspaceSwitchFactor,
-      ) >=
+      (Math.abs(fingerTotal * this.workspaceGestureSpeed.workspaceSwitchFactor) >=
         gesture.distance * WORKSPACE_GESTURE_THRESHOLD_RATIO ||
         Math.abs(
-          event.velocityY *
+          fingerVelocity *
             this.workspaceGestureSpeed.workspaceSwitchVelocityFactor,
         ) >= WORKSPACE_GESTURE_VELOCITY_THRESHOLD);
 
@@ -2606,15 +2816,15 @@ export class HybridWindowManager {
       );
       this.currentMonitor = gesture.monitor;
       gesture.fromWorkspace.animateWorkspaceTransition({
-        fromOffsetY: gesture.fromOffsetY,
-        toOffsetY: -gesture.direction * gesture.distance,
+        fromOffsetX: gesture.fromOffsetX,
+        toOffsetX: -gesture.direction * gesture.distance,
         fromOpacity: gesture.fromOpacity,
-        toOpacity: 0,
+        toOpacity: WORKSPACE_SLIDE_MIN_OPACITY,
         visibleAfter: false,
       });
       gesture.toWorkspace.animateWorkspaceTransition({
-        fromOffsetY: gesture.toOffsetY,
-        toOffsetY: 0,
+        fromOffsetX: gesture.toOffsetX,
+        toOffsetX: 0,
         fromOpacity: gesture.toOpacity,
         toOpacity: 1,
         visibleAfter: true,
@@ -2626,18 +2836,18 @@ export class HybridWindowManager {
     }
 
     gesture.fromWorkspace.animateWorkspaceTransition({
-      fromOffsetY: gesture.fromOffsetY,
-      toOffsetY: 0,
+      fromOffsetX: gesture.fromOffsetX,
+      toOffsetX: 0,
       fromOpacity: gesture.fromOpacity,
       toOpacity: 1,
       visibleAfter: true,
     });
     if (gesture.toWorkspace) {
       gesture.toWorkspace.animateWorkspaceTransition({
-        fromOffsetY: gesture.toOffsetY,
-        toOffsetY: gesture.direction * gesture.distance,
+        fromOffsetX: gesture.toOffsetX,
+        toOffsetX: gesture.direction * gesture.distance,
         fromOpacity: gesture.toOpacity,
-        toOpacity: 0,
+        toOpacity: WORKSPACE_SLIDE_MIN_OPACITY,
         visibleAfter: false,
       });
     }
@@ -2716,8 +2926,8 @@ export class HybridWindowManager {
           this.windowStack.has(window) &&
           managedRectContainsPoint(
             window.state[WINDOW_STATE_RECT](),
-            position.x,
-            position.y - window.state[WINDOW_STATE_WORKSPACE_OFFSET_Y](),
+            position.x - window.state[WINDOW_STATE_WORKSPACE_OFFSET_X](),
+            position.y,
           ),
       )
       .sort(
@@ -2847,8 +3057,14 @@ export class HybridWindowManager {
     return 0;
   }
 
+  /**
+   * How far a workspace slides: the monitor width plus a gap, so the two
+   * workspaces sit side by side during the move.
+   */
   private workspaceTransitionDistance(monitor: string): number {
-    return read(this.workspaceViewportRect(monitor).height);
+    const rect =
+      this.monitorFullRect(monitor) ?? this.workspaceViewportRect(monitor);
+    return read(rect.width) + TILE_GAP;
   }
 
   private workspaceViewportRect(monitor: string): ManagedWindowRect {
@@ -3742,7 +3958,14 @@ export class Workspace {
   private kineticScrollPoll: PollHandle | null = null;
   private kineticScrollToken = 0;
   public monitor: string;
-  public isTiled = false;
+  /** New workspaces start tiled (spec §6). */
+  public mode: WorkspaceMode = "tiled";
+  /** The mode Super+S goes back to when it turns floating off. */
+  private lastTilingMode: TilingMode = "tiled";
+  /** The split tree of the tiled mode. Null in the other modes. */
+  private tree: TileTree = null;
+  /** Window ids, the most recently focused first (all workspaces). */
+  private readonly recentFocusOrder: () => string[];
 
   public constructor(
     index: number,
@@ -3750,12 +3973,22 @@ export class Workspace {
     naturalRootRect: (window: WaylandWindow) => ManagedWindowRect,
     maximizedRootRect: (window: WaylandWindow) => ManagedWindowRect,
     activeWorkspaceIndex: (monitor: string) => number,
+    recentFocusOrder: () => string[] = () => [],
   ) {
     this.index = index;
     this.monitor = monitor;
     this.naturalRootRect = naturalRootRect;
     this.maximizedRootRect = maximizedRootRect;
     this.activeWorkspaceIndex = activeWorkspaceIndex;
+    this.recentFocusOrder = recentFocusOrder;
+  }
+
+  /**
+   * The workspace tiles its windows: tiled or scrolling mode. Most of the
+   * code only asks "floating or not", so both tiling modes say true here.
+   */
+  public get isTiled(): boolean {
+    return this.mode !== "floating";
   }
 
   public moveToMonitor(monitor: string, index: number) {
@@ -3838,7 +4071,7 @@ export class Workspace {
     }
     const visible = this.isActive();
     window.state[WINDOW_STATE_WORKSPACE_VISIBLE].set(visible);
-    window.state[WINDOW_STATE_WORKSPACE_OFFSET_Y].set(0);
+    window.state[WINDOW_STATE_WORKSPACE_OFFSET_X].set(0);
     window.state[WINDOW_STATE_WORKSPACE_OPACITY].set(visible ? 1 : 0);
     this.syncWindowVisibleOutputs(window);
 
@@ -3929,6 +4162,9 @@ export class Workspace {
       // have to be read before the splice takes it out.
       const wasTile = this.isTileable(window);
       const tileIndex = this.tileIndexOf(window.id);
+      // Tiled mode: the window that takes the space also takes the focus.
+      const treeSuccessorId = siblingLeaf(this.tree, window.id);
+      this.tree = removeTile(this.tree, window.id);
       this.forgetStacking(window, this.shouldTile(window));
       this.windows.splice(index, 1);
       this.tileWidthByWindowId.delete(window.id);
@@ -3942,7 +4178,10 @@ export class Workspace {
       }
       let nextFocus: WaylandWindow | null = null;
       if (this.activeWindowId === window.id) {
-        nextFocus = this.successorForRemovedWindow(wasTile, tileIndex);
+        nextFocus =
+          this.mode === "tiled" && wasTile && treeSuccessorId
+            ? (this.findWindowById(treeSuccessorId) ?? null)
+            : this.successorForRemovedWindow(wasTile, tileIndex);
         this.activeWindowId = nextFocus?.id ?? null;
       }
       return nextFocus;
@@ -3994,10 +4233,13 @@ export class Workspace {
     zIndexOf: (window: WaylandWindow) => number,
   ): WaylandWindow | null {
     if (this.isTiled && this.shouldTile(window)) {
-      const tile = this.successorForRemovedWindow(
-        true,
-        this.tileIndexOf(window.id),
-      );
+      // Tiled mode: the window that takes the space (the layout still holds
+      // the minimized window while the lamp runs).
+      const treeSuccessorId = siblingLeaf(this.tree, window.id);
+      const tile =
+        this.mode === "tiled" && treeSuccessorId
+          ? this.findWindowById(treeSuccessorId)
+          : this.successorForRemovedWindow(true, this.tileIndexOf(window.id));
       if (tile) {
         return tile;
       }
@@ -4069,7 +4311,7 @@ export class Workspace {
   }
 
   public moveFocusedTile(direction: -1 | 1): boolean {
-    if (!this.isTiled) {
+    if (this.mode !== "scrolling") {
       return false;
     }
 
@@ -4210,7 +4452,7 @@ export class Workspace {
 
   /** Move focus up (-1) or down (1) inside the focused column. */
   public focusInColumn(direction: -1 | 1): boolean {
-    if (!this.isTiled) {
+    if (this.mode !== "scrolling") {
       return false;
     }
     const columns = this.tileColumns();
@@ -4453,12 +4695,12 @@ export class Workspace {
       this.syncWindowVisibleOutputs(window);
       if (window.state[WINDOW_STATE_TILE_DRAGGING]()) {
         window.state[WINDOW_STATE_WORKSPACE_VISIBLE].set(true);
-        window.state[WINDOW_STATE_WORKSPACE_OFFSET_Y].set(0);
+        window.state[WINDOW_STATE_WORKSPACE_OFFSET_X].set(0);
         window.state[WINDOW_STATE_WORKSPACE_OPACITY].set(1);
         continue;
       }
       window.state[WINDOW_STATE_WORKSPACE_VISIBLE].set(visible);
-      window.state[WINDOW_STATE_WORKSPACE_OFFSET_Y].set(0);
+      window.state[WINDOW_STATE_WORKSPACE_OFFSET_X].set(0);
       window.state[WINDOW_STATE_WORKSPACE_OPACITY].set(visible ? 1 : 0);
     }
   }
@@ -4471,42 +4713,42 @@ export class Workspace {
     this.setVisible(visible);
   }
 
-  public prepareWorkspaceTransition(offsetY: number, opacity: number) {
+  public prepareWorkspaceTransition(offsetX: number, opacity: number) {
     this.visibilityAnimationToken += 1;
     for (const window of this.windows) {
       this.syncWindowVisibleOutputs(window);
       if (window.state[WINDOW_STATE_TILE_DRAGGING]()) {
         window.state[WINDOW_STATE_WORKSPACE_VISIBLE].set(true);
-        window.state[WINDOW_STATE_WORKSPACE_OFFSET_Y].set(0);
+        window.state[WINDOW_STATE_WORKSPACE_OFFSET_X].set(0);
         window.state[WINDOW_STATE_WORKSPACE_OPACITY].set(1);
         continue;
       }
       window.state[WINDOW_STATE_WORKSPACE_VISIBLE].set(true);
-      window.state[WINDOW_STATE_WORKSPACE_OFFSET_Y].set(offsetY);
+      window.state[WINDOW_STATE_WORKSPACE_OFFSET_X].set(offsetX);
       window.state[WINDOW_STATE_WORKSPACE_OPACITY].set(opacity);
     }
   }
 
-  public setWorkspaceGestureVisual(offsetY: number, opacity: number) {
+  public setWorkspaceGestureVisual(offsetX: number, opacity: number) {
     this.visibilityAnimationToken += 1;
     for (const window of this.windows) {
       this.syncWindowVisibleOutputs(window);
       cancelWorkspaceVisualAnimation(window);
       if (window.state[WINDOW_STATE_TILE_DRAGGING]()) {
         window.state[WINDOW_STATE_WORKSPACE_VISIBLE].set(true);
-        window.state[WINDOW_STATE_WORKSPACE_OFFSET_Y].set(0);
+        window.state[WINDOW_STATE_WORKSPACE_OFFSET_X].set(0);
         window.state[WINDOW_STATE_WORKSPACE_OPACITY].set(1);
         continue;
       }
       window.state[WINDOW_STATE_WORKSPACE_VISIBLE].set(true);
-      window.state[WINDOW_STATE_WORKSPACE_OFFSET_Y].set(offsetY);
+      window.state[WINDOW_STATE_WORKSPACE_OFFSET_X].set(offsetX);
       window.state[WINDOW_STATE_WORKSPACE_OPACITY].set(opacity);
     }
   }
 
   public animateWorkspaceTransition(options: {
-    fromOffsetY: number;
-    toOffsetY: number;
+    fromOffsetX: number;
+    toOffsetX: number;
     fromOpacity: number;
     toOpacity: number;
     visibleAfter: boolean;
@@ -4518,7 +4760,7 @@ export class Workspace {
       this.syncWindowVisibleOutputs(window);
       if (window.state[WINDOW_STATE_TILE_DRAGGING]()) {
         window.state[WINDOW_STATE_WORKSPACE_VISIBLE].set(true);
-        window.state[WINDOW_STATE_WORKSPACE_OFFSET_Y].set(0);
+        window.state[WINDOW_STATE_WORKSPACE_OFFSET_X].set(0);
         window.state[WINDOW_STATE_WORKSPACE_OPACITY].set(1);
         continue;
       }
@@ -4534,7 +4776,7 @@ export class Workspace {
       ) {
         cancelWorkspaceVisualAnimation(window);
         window.state[WINDOW_STATE_WORKSPACE_VISIBLE].set(true);
-        window.state[WINDOW_STATE_WORKSPACE_OFFSET_Y].set(0);
+        window.state[WINDOW_STATE_WORKSPACE_OFFSET_X].set(0);
         window.state[WINDOW_STATE_WORKSPACE_OPACITY].set(options.toOpacity);
         continue;
       }
@@ -4545,8 +4787,8 @@ export class Workspace {
       // animation has already completed (e.g., rapid switches).
       scheduleWorkspaceVisualAnimation(
         window,
-        options.fromOffsetY,
-        options.toOffsetY,
+        options.fromOffsetX,
+        options.toOffsetX,
         options.fromOpacity,
         options.toOpacity,
         WINDOW_MANAGEMENT_EASING,
@@ -4573,11 +4815,68 @@ export class Workspace {
     );
   }
 
-  public setTiled(tiled: boolean) {
-    if (this.isTiled === tiled) {
+  /** The mode Super+S turns back on after floating. */
+  public get lastTilingLayout(): TilingMode {
+    return this.lastTilingMode;
+  }
+
+  /** Put the workspace in `mode` and lay its windows out again. */
+  public setMode(mode: WorkspaceMode) {
+    if (this.mode === mode) {
       return;
     }
+    if (mode !== "floating") {
+      this.lastTilingMode = mode;
+    }
+    if (this.mode === "floating" || mode === "floating") {
+      this.tree = null;
+      this.setTiled(mode);
+      return;
+    }
+    this.switchTilingMode(mode);
+  }
 
+  /**
+   * Between the two tiling modes. To scrolling: one column per window, in
+   * tree order, at the default width. To tiled: the tree is built from the
+   * windows in their column order (the limits do not apply, spec §6).
+   */
+  private switchTilingMode(mode: TilingMode) {
+    this.stopKineticScroll();
+    const focused = this.focusedWindow();
+    const focusedTile =
+      focused && this.isTileable(focused) ? focused : undefined;
+    const treeOrder = leafIds(this.tree);
+    this.mode = mode;
+    this.tree = null;
+    this.scrollOffset = 0;
+    this.stackedWindowIds.clear();
+    if (mode === "scrolling") {
+      // writeColumns needs every tile, minimized ones too: they go last.
+      const tiles = this.windows.filter((window) => this.shouldTile(window));
+      const ordered = [
+        ...treeOrder
+          .map((id) => tiles.find((window) => window.id === id))
+          .filter((window): window is WaylandWindow => window !== undefined),
+        ...tiles.filter((window) => !treeOrder.includes(window.id)),
+      ];
+      this.writeColumns(ordered.map((window) => [window]));
+      for (const window of tiles) {
+        this.tileWidthByWindowId.delete(window.id);
+        this.userSizedTileIds.delete(window.id);
+      }
+    }
+    if (focusedTile) {
+      this.activeWindowId = focusedTile.id;
+      this.scrollToWindow(focusedTile);
+    }
+    this.applyLayout();
+    focusedTile?.focus();
+  }
+
+  /** Between floating and a tiling mode (the old Super+S toggle). */
+  private setTiled(mode: WorkspaceMode) {
+    const tiled = mode !== "floating";
     this.stopKineticScroll();
 
     const focusedWindow = this.focusedWindow();
@@ -4587,7 +4886,7 @@ export class Workspace {
       !focusedWindow.state[WINDOW_STATE_MINIMIZED]()
         ? focusedWindow
         : undefined;
-    this.isTiled = tiled;
+    this.mode = mode;
     // Columns do not survive a trip through floating mode.
     this.stackedWindowIds.clear();
     if (tiled) {
@@ -4699,7 +4998,11 @@ export class Workspace {
       return;
     }
 
-    this.popFullTilesOutOfColumns();
+    if (this.mode === "tiled") {
+      this.syncTree();
+    } else {
+      this.popFullTilesOutOfColumns();
+    }
     const tileable = this.tileableWindows();
     const animate = options.animate ?? true;
     const suppressSSDRebuild = options.suppressSSDRebuild ?? true;
@@ -4739,36 +5042,12 @@ export class Workspace {
 
     const viewportRect = this.tileViewportRect();
     this.lastAppliedTileViewportRect = snapshotManagedRect(viewportRect);
-    const viewportHeight = read(viewportRect.height);
-    let nextX = read(viewportRect.x) - this.physicalAlignedScrollOffset();
     const appliedRects: Record<string, ManagedWindowRect> = {};
     this.lastDraggingSlotRect = null;
-
-    // One x and width per column. The windows of a column split its height.
-    // A window alone in its column keeps the client's height cap (centered).
-    const placements: { window: WaylandWindow; rect: ManagedWindowRect }[] =
-      [];
-    for (const column of this.tileColumns(tileable)) {
-      const columnWidth = this.tileWidthForWindow(column[0], viewportRect);
-      const tileHeight =
-        (viewportHeight - TILE_GAP * (column.length - 1)) / column.length;
-      column.forEach((window, row) => {
-        const rect = window.state[WINDOW_STATE_FULLSCREEN]()
-          ? this.fullscreenRootRect(window)
-          : window.state[WINDOW_STATE_MAXIMIZED]()
-            ? this.maximizedTileRect(window, nextX)
-            : column.length === 1
-              ? this.tileRect(window, nextX, columnWidth, viewportRect)
-              : {
-                  x: nextX,
-                  y: read(viewportRect.y) + row * (tileHeight + TILE_GAP),
-                  width: columnWidth,
-                  height: tileHeight,
-                };
-        placements.push({ window, rect });
-      });
-      nextX += columnWidth + TILE_GAP;
-    }
+    const placements =
+      this.mode === "tiled"
+        ? this.treePlacements(tileable, viewportRect)
+        : this.columnPlacements(tileable, viewportRect);
 
     for (const { window, rect } of placements) {
       appliedRects[window.id] = rect;
@@ -4813,6 +5092,265 @@ export class Workspace {
     );
   }
 
+  /**
+   * Scrolling mode: one x and width per column. The windows of a column
+   * split its height. A window alone in its column keeps the client's
+   * height cap (centered).
+   */
+  private columnPlacements(
+    tileable: WaylandWindow[],
+    viewportRect: ManagedWindowRect,
+  ): { window: WaylandWindow; rect: ManagedWindowRect }[] {
+    const viewportHeight = read(viewportRect.height);
+    let nextX = read(viewportRect.x) - this.physicalAlignedScrollOffset();
+    const placements: { window: WaylandWindow; rect: ManagedWindowRect }[] =
+      [];
+    for (const column of this.tileColumns(tileable)) {
+      const columnWidth = this.tileWidthForWindow(column[0], viewportRect);
+      const tileHeight =
+        (viewportHeight - TILE_GAP * (column.length - 1)) / column.length;
+      column.forEach((window, row) => {
+        const rect = window.state[WINDOW_STATE_FULLSCREEN]()
+          ? this.fullscreenRootRect(window)
+          : window.state[WINDOW_STATE_MAXIMIZED]()
+            ? this.maximizedTileRect(window, nextX)
+            : column.length === 1
+              ? this.tileRect(window, nextX, columnWidth, viewportRect)
+              : {
+                  x: nextX,
+                  y: read(viewportRect.y) + row * (tileHeight + TILE_GAP),
+                  width: columnWidth,
+                  height: tileHeight,
+                };
+        placements.push({ window, rect });
+      });
+      nextX += columnWidth + TILE_GAP;
+    }
+    return placements;
+  }
+
+  /**
+   * Tiled mode: each window gets its cell of the split tree. A maximized
+   * window covers the maximized rect of the screen (over the other tiles)
+   * until it is restored. A fullscreen window covers the whole monitor.
+   */
+  private treePlacements(
+    tileable: WaylandWindow[],
+    viewportRect: ManagedWindowRect,
+  ): { window: WaylandWindow; rect: ManagedWindowRect }[] {
+    const area = plainRect(viewportRect);
+    const cells = tileLayout(this.tree, area, TILE_GAP);
+    return tileable.map((window) => {
+      const rect = window.state[WINDOW_STATE_FULLSCREEN]()
+        ? this.fullscreenRootRect(window)
+        : window.state[WINDOW_STATE_MAXIMIZED]()
+          ? this.maximizedRootRect(window)
+          : this.fitTileInCell(window, cells.get(window.id) ?? area);
+      return { window, rect };
+    });
+  }
+
+  /**
+   * A window with a maximum size smaller than its cell keeps that size and
+   * sits in the middle of the cell. Other windows fill the cell.
+   */
+  private fitTileInCell(window: WaylandWindow, cell: TileRect): ManagedWindowRect {
+    const width = Math.min(cell.width, this.maxTileWidth(window));
+    const height = Math.min(
+      cell.height,
+      constrainedMax(
+        window.sizeConstraints(),
+        "height",
+        this.rootClientHeightExtra(window),
+      ),
+    );
+    return {
+      x: cell.x + Math.round((cell.width - width) / 2),
+      y: cell.y + Math.round((cell.height - height) / 2),
+      width,
+      height,
+    };
+  }
+
+  /** The rect the tiled mode fills: the tile viewport (screen minus margins). */
+  private tiledArea(): TileRect {
+    return plainRect(this.tileViewportRect());
+  }
+
+  /**
+   * Make the tree hold exactly the tiles: drop the windows that left (closed,
+   * minimized, floating now, moved away) and insert new ones with the rules.
+   * No limits here: a window already on the workspace always gets a place.
+   */
+  private syncTree(): void {
+    const tileable = this.tileableWindows();
+    const tileIds = new Set(tileable.map((window) => window.id));
+    let tree = this.tree;
+    for (const id of leafIds(tree)) {
+      if (!tileIds.has(id)) {
+        tree = removeTile(tree, id);
+      }
+    }
+    const missing = tileable.filter((window) => !hasLeaf(tree, window.id));
+    if (missing.length > 0) {
+      const area = this.tiledArea();
+      const recentFocusOrder = this.recentFocusOrder();
+      let focusedId = this.tiledAnchorId(tree);
+      for (const window of missing) {
+        tree = insertTile(tree, window.id, {
+          area,
+          gap: TILE_GAP,
+          focusedId,
+          recentFocusOrder,
+        });
+        // The next one splits as if this one took the focus (spec §6).
+        focusedId = window.id;
+      }
+    }
+    this.tree = tree;
+  }
+
+  /** The tile the tiled-mode keys act on: the focused one, else the active one. */
+  private tiledAnchorId(tree: TileTree = this.tree): string | null {
+    const focused = this.focusedWindow();
+    if (focused && hasLeaf(tree, focused.id)) {
+      return focused.id;
+    }
+    if (this.activeWindowId && hasLeaf(tree, this.activeWindowId)) {
+      return this.activeWindowId;
+    }
+    return null;
+  }
+
+  /**
+   * Tiled mode, rule 3: a new window fits on this workspace. Always true in
+   * the other modes.
+   */
+  public canTileNewWindow(): boolean {
+    if (this.mode !== "tiled") {
+      return true;
+    }
+    this.syncTree();
+    return canInsertTile(this.tree, {
+      area: this.tiledArea(),
+      gap: TILE_GAP,
+      focusedId: this.tiledAnchorId(),
+      recentFocusOrder: this.recentFocusOrder(),
+    });
+  }
+
+  /** Tiled mode: focus the window in `direction`. "edge" when there is none. */
+  public focusTiledNeighbour(direction: TileDirection): TiledKeyResult {
+    if (this.mode !== "tiled") {
+      return "none";
+    }
+    this.syncTree();
+    const fromId = this.tiledAnchorId();
+    if (!fromId) {
+      // No tile has the focus (a dialog has it, or nothing): take the first.
+      const first = leafIds(this.tree)[0];
+      return first ? this.focusTileById(first) : "edge";
+    }
+    const targetId = tileNeighbour(
+      tileLayout(this.tree, this.tiledArea(), TILE_GAP),
+      fromId,
+      direction,
+      this.recentFocusOrder(),
+    );
+    return targetId ? this.focusTileById(targetId) : "edge";
+  }
+
+  private focusTileById(id: string): TiledKeyResult {
+    const window = this.findWindowById(id);
+    if (!window) {
+      return "none";
+    }
+    this.activeWindowId = id;
+    window.focus();
+    return "done";
+  }
+
+  /**
+   * Tiled mode: swap the focused window with the window in `direction`.
+   * "edge" when there is none, so the caller can move it to a workspace.
+   */
+  public swapTiledNeighbour(direction: TileDirection): TiledKeyResult {
+    if (this.mode !== "tiled") {
+      return "none";
+    }
+    this.syncTree();
+    const fromId = this.tiledAnchorId();
+    const window = fromId ? this.findWindowById(fromId) : undefined;
+    if (!fromId || !window) {
+      return "none";
+    }
+    const targetId = tileNeighbour(
+      tileLayout(this.tree, this.tiledArea(), TILE_GAP),
+      fromId,
+      direction,
+      this.recentFocusOrder(),
+    );
+    if (!targetId) {
+      return "edge";
+    }
+    this.tree = swapTiles(this.tree, fromId, targetId);
+    this.commitTreeChange(window);
+    return "done";
+  }
+
+  /** Tiled mode: flip the split of the focused window. */
+  public flipFocusedSplit(): boolean {
+    if (this.mode !== "tiled") {
+      return false;
+    }
+    this.syncTree();
+    const id = this.tiledAnchorId();
+    const window = id ? this.findWindowById(id) : undefined;
+    if (!id || !window) {
+      return false;
+    }
+    this.tree = flipTile(this.tree, id);
+    this.commitTreeChange(window);
+    return true;
+  }
+
+  /**
+   * Tiled mode: move the divider of the focused window's split, so the
+   * window gets `delta` (a share, like 0.05) more of the split.
+   */
+  public resizeFocusedSplit(delta: number): boolean {
+    if (this.mode !== "tiled") {
+      return false;
+    }
+    this.syncTree();
+    const id = this.tiledAnchorId();
+    const window = id ? this.findWindowById(id) : undefined;
+    if (!id || !window) {
+      return false;
+    }
+    const next = resizeTileSplit(
+      this.tree,
+      id,
+      delta,
+      this.tiledArea(),
+      TILE_GAP,
+    );
+    if (next === this.tree) {
+      return false;
+    }
+    this.tree = next;
+    this.commitTreeChange(window);
+    return true;
+  }
+
+  /** Lay out after a tree change and keep the focus on `window`. */
+  private commitTreeChange(window: WaylandWindow) {
+    this.activeWindowId = window.id;
+    this.markTileReordering(window);
+    this.applyLayout();
+    window.focus();
+  }
+
   public resizeTile(event: WindowResizeEvent) {
     const tileable = this.tileableWindows();
     if (!tileable.some((window) => window.id === event.window.id)) {
@@ -4830,6 +5368,15 @@ export class Workspace {
 
     stopRectAnimation(event.window, WINDOW_STATE_RECT);
     this.activeWindowId = event.window.id;
+
+    if (this.mode === "tiled") {
+      // The tree sets the size: the window goes back to its cell. The keys
+      // Super+Minus / Super+Equal move the divider instead.
+      if (event.phase === "end" || event.phase === "cancel") {
+        this.applyLayout();
+      }
+      return;
+    }
 
     const viewportRect = this.tileViewportRect();
     const minWidth = this.minTileWidth(event.window, viewportRect);
@@ -4871,7 +5418,7 @@ export class Workspace {
     window.state[WINDOW_STATE_TILE_DRAGGING].set(true);
     this.syncWindowVisibleOutputs(window);
     window.state[WINDOW_STATE_WORKSPACE_VISIBLE].set(true);
-    window.state[WINDOW_STATE_WORKSPACE_OFFSET_Y].set(0);
+    window.state[WINDOW_STATE_WORKSPACE_OFFSET_X].set(0);
     window.state[WINDOW_STATE_WORKSPACE_OPACITY].set(1);
     this.setTileWidthFromRect(window, window.state[WINDOW_STATE_RECT](), false);
     stopRectAnimation(window, WINDOW_STATE_RECT);
@@ -4890,7 +5437,7 @@ export class Workspace {
     window.state[WINDOW_STATE_TILE_DRAGGING].set(true);
     this.syncWindowVisibleOutputs(window);
     window.state[WINDOW_STATE_WORKSPACE_VISIBLE].set(true);
-    window.state[WINDOW_STATE_WORKSPACE_OFFSET_Y].set(0);
+    window.state[WINDOW_STATE_WORKSPACE_OFFSET_X].set(0);
     window.state[WINDOW_STATE_WORKSPACE_OPACITY].set(visible ? 1 : 0);
     stopRectAnimation(window, WINDOW_STATE_RECT);
     window.state[WINDOW_STATE_RECT].set(rect);
@@ -4937,7 +5484,7 @@ export class Workspace {
     this.draggingWindowId = null;
     window.state[WINDOW_STATE_TILE_DRAGGING].set(false);
     this.syncWindowVisibleOutputs(window);
-    window.state[WINDOW_STATE_WORKSPACE_OFFSET_Y].set(0);
+    window.state[WINDOW_STATE_WORKSPACE_OFFSET_X].set(0);
     window.state[WINDOW_STATE_WORKSPACE_OPACITY].set(this.isActive() ? 1 : 0);
     if (!cancelled) {
       this.activeWindowId = window.id;
@@ -4949,8 +5496,27 @@ export class Workspace {
     }
   }
 
+  /**
+   * Floating mode: remember the focused window, so a switch back to this
+   * workspace focuses it again (`focusActiveWindow`). No layout work.
+   */
+  public rememberFocusedWindow(window: WaylandWindow) {
+    if (!this.isTiled && this.hasWindow(window)) {
+      this.activeWindowId = window.id;
+    }
+  }
+
   public focusWindow(window: WaylandWindow) {
     if (!this.shouldTile(window)) {
+      return;
+    }
+    if (this.mode === "tiled") {
+      // Focus does not move tiles. Only a window that is not in the tree
+      // yet (just restored from minimized) needs a layout.
+      this.activeWindowId = window.id;
+      if (!hasLeaf(this.tree, window.id)) {
+        this.applyLayout();
+      }
       return;
     }
     if (this.activeWindowId === window.id) {
@@ -5005,7 +5571,8 @@ export class Workspace {
     if (this.shouldTile(window)) {
       const previousActiveWindowId = this.activeWindowId;
       this.activeWindowId = window.id;
-      if (previousActiveWindowId !== window.id) {
+      // In tiled mode the focus does not move tiles.
+      if (previousActiveWindowId !== window.id && this.mode !== "tiled") {
         this.reapplyStaticManagedLayout();
       }
     }
@@ -5076,7 +5643,8 @@ export class Workspace {
       cancelRectAnimations?: boolean;
     } = {},
   ): boolean {
-    if (!this.isTiled || deltaX === 0) {
+    // Only the scrolling mode scrolls.
+    if (this.mode !== "scrolling" || deltaX === 0) {
       return false;
     }
     if (options.stopKinetic !== false) {
@@ -5118,6 +5686,9 @@ export class Workspace {
    * dropped; the clamped ends are natural stops already.
    */
   private tileSnapOffsets(): number[] {
+    if (this.mode !== "scrolling") {
+      return [];
+    }
     const columns = this.tileColumns();
     const viewportRect = this.tileViewportRect();
     const viewportWidth = read(viewportRect.width);
@@ -5227,7 +5798,7 @@ export class Workspace {
   ): void {
     this.stopKineticScroll();
     if (
-      !this.isTiled ||
+      this.mode !== "scrolling" ||
       Math.abs(initialVelocityX) < WORKSPACE_KINETIC_SCROLL_MIN_VELOCITY
     ) {
       return;
@@ -5290,7 +5861,7 @@ export class Workspace {
     this.kineticScrollPoll = createPoll(
       intervalMs,
       (handle) => {
-        if (this.kineticScrollToken !== token || !this.isTiled) {
+        if (this.kineticScrollToken !== token || this.mode !== "scrolling") {
           handle.cancel();
           if (this.kineticScrollPoll === handle) {
             this.kineticScrollPoll = null;
@@ -5327,6 +5898,10 @@ export class Workspace {
   }
 
   public focusRelative(direction: -1 | 1) {
+    if (this.mode === "tiled") {
+      this.focusRelativeInTree(direction);
+      return;
+    }
     // Focus moves by column. Entering a column focuses its top window.
     const columns = this.tileColumns();
     if (columns.length === 0) {
@@ -5353,6 +5928,22 @@ export class Workspace {
     this.scrollToWindow(target);
     this.applyLayout();
     this.focusActiveWindow();
+  }
+
+  /** Tiled mode: focus the previous (-1) or next (1) window in tree order. */
+  private focusRelativeInTree(direction: -1 | 1) {
+    this.syncTree();
+    const ids = leafIds(this.tree);
+    if (ids.length === 0) {
+      return;
+    }
+    const current = this.tiledAnchorId();
+    const index = current ? ids.indexOf(current) : -1;
+    const next =
+      index < 0
+        ? ids[direction < 0 ? ids.length - 1 : 0]
+        : ids[clamp(index + direction, 0, ids.length - 1)];
+    this.focusTileById(next);
   }
 
   /**
@@ -5510,6 +6101,8 @@ export class Workspace {
       monitor: this.monitor,
       index: this.index,
       isTiled: this.isTiled,
+      mode: this.mode,
+      lastTilingMode: this.lastTilingMode,
       activeWindowId: this.activeWindowId,
       scrollOffset: this.scrollOffset,
       windows: this.windows.map((window) => this.snapshotWindow(window)),
@@ -5517,7 +6110,13 @@ export class Workspace {
   }
 
   public restore(snapshot: WorkspaceSnapshot) {
-    this.isTiled = snapshot.isTiled;
+    // A snapshot from before the tiled mode only has isTiled: its tiles
+    // scrolled. The tree is not in the snapshot; it is built again.
+    this.mode = snapshot.mode ?? (snapshot.isTiled ? "scrolling" : "floating");
+    this.lastTilingMode =
+      snapshot.lastTilingMode ??
+      (this.mode === "floating" ? "tiled" : this.mode);
+    this.tree = null;
     this.activeWindowId = snapshot.activeWindowId;
     this.scrollOffset = snapshot.scrollOffset;
     this.tileWidthByWindowId.clear();
@@ -5960,6 +6559,11 @@ export class Workspace {
     options: { force?: boolean } = {},
   ) {
     this.stopKineticScroll();
+    if (this.mode === "tiled") {
+      // Nothing scrolls in tiled mode.
+      this.scrollOffset = 0;
+      return;
+    }
     // A maximized tile leaves its column first, so it scrolls to its own slot.
     this.popFullTilesOutOfColumns();
 
@@ -5991,6 +6595,10 @@ export class Workspace {
   }
 
   private clampScrollOffset() {
+    if (this.mode === "tiled") {
+      this.scrollOffset = 0;
+      return;
+    }
     const viewportRect = this.tileViewportRect();
     const viewportWidth = read(viewportRect.width);
     const contentWidth = this.tileContentWidth(
@@ -6420,6 +7028,16 @@ function snapshotManagedRect(rect: ManagedWindowRect): ManagedWindowRect {
   };
 }
 
+/** The rect as plain numbers, for ./tiled-layout.ts. */
+function plainRect(rect: ManagedWindowRect): TileRect {
+  return {
+    x: read(rect.x),
+    y: read(rect.y),
+    width: read(rect.width),
+    height: read(rect.height),
+  };
+}
+
 function managedRectEquals(
   a: ManagedWindowRect,
   b: ManagedWindowRect,
@@ -6590,22 +7208,22 @@ function scheduleMinimizeAnimation(
 
 function scheduleWorkspaceVisualAnimation(
   window: WaylandWindow,
-  fromOffsetY: number,
-  toOffsetY: number,
+  fromOffsetX: number,
+  toOffsetX: number,
   fromOpacity: number,
   toOpacity: number,
   easing: EasingFunction,
   duration: number,
 ): void {
   cancelWorkspaceVisualAnimation(window);
-  window.state[WINDOW_STATE_WORKSPACE_OFFSET_Y].set(0);
+  window.state[WINDOW_STATE_WORKSPACE_OFFSET_X].set(0);
   window.state[WINDOW_STATE_WORKSPACE_OPACITY].set(toOpacity);
 
   window.scheduleAnimation({
     channel: WORKSPACE_VISUAL_RECT_ANIMATION_CHANNEL,
     rect: {
-      from: { x: 0, y: fromOffsetY, width: 0, height: 0 },
-      to: { x: 0, y: toOffsetY, width: 0, height: 0 },
+      from: { x: fromOffsetX, y: 0, width: 0, height: 0 },
+      to: { x: toOffsetX, y: 0, width: 0, height: 0 },
       duration,
       easing,
       mode: "add",
@@ -6629,7 +7247,7 @@ function resetWorkspaceVisualState(
 ): void {
   cancelWorkspaceVisualAnimation(window);
   window.state[WINDOW_STATE_WORKSPACE_VISIBLE].set(visible);
-  window.state[WINDOW_STATE_WORKSPACE_OFFSET_Y].set(0);
+  window.state[WINDOW_STATE_WORKSPACE_OFFSET_X].set(0);
   window.state[WINDOW_STATE_WORKSPACE_OPACITY].set(visible ? 1 : 0);
 }
 

@@ -12,24 +12,31 @@
  * The idea of the layout:
  *
  * - Super + a letter: an app or a tool (T terminal, B browser, Q close, ...).
- * - Super + arrows: the focused window. Tiling: move focus between tiles.
- *   Floating: put the window in a half of the screen (KDE's quick tile).
- * - Super + Shift + arrows: move the window (tile order, or a half).
+ * - Super + arrows: the focused window. Tiled and scrolling: move focus
+ *   between tiles. Floating: put the window in a half of the screen (KDE's
+ *   quick tile).
+ * - Super + Shift + arrows: move the window (swap, tile order, or a half).
  * - Super + Ctrl + arrows: workspaces. Add Shift to take the window along.
  * - Super + number: workspace N. Add Shift to send the window there.
+ * - Super + Space: the layout mode of the workspace (tiled, scrolling,
+ *   floating). Super + S: floating on / off.
  */
 import { COMPOSITOR } from "shoji_wm";
+import { TILED_RESIZE_STEP } from "./tiled-layout";
 import type { HybridWindowManager } from "./window-manager";
 import type { WindowSwitcher } from "./window-switcher";
 
 /** Super+Minus / Super+Equal make the focused column this much narrower / wider. */
 const TILE_WIDTH_STEP = 100;
+/** The same keys in tiled mode, as a percentage of the split. */
+const TILED_RESIZE_PERCENT = Math.round(TILED_RESIZE_STEP * 100);
 
 /** The groups of the cheat sheet, in the order it shows them. */
 export const KEY_GROUPS = [
   "Apps",
   "Windows",
-  "Tiling",
+  "Tiled",
+  "Scrolling",
   "Floating",
   "Workspaces",
   "Switchers",
@@ -62,11 +69,13 @@ export interface KeyEntry {
   label?: string;
   description: string;
   /**
-   * The keys do different things in a tiled and a floating workspace. The
-   * sheet then shows the entry under "Tiling" with `tiling`, and under
-   * "Floating" with `floating`; `group` and `description` are not shown.
+   * The keys do different things in each layout mode. The sheet then shows
+   * the entry under "Tiled" with `tiled`, under "Scrolling" with
+   * `scrolling`, and under "Floating" with `floating` (each one only when
+   * it is set); `group` and `description` are not shown.
    */
-  tiling?: string;
+  tiled?: string;
+  scrolling?: string;
   floating?: string;
   /** Bound, but not in the sheet or `shoji-keys` (the KDE preview keys). */
   hidden?: boolean;
@@ -103,14 +112,17 @@ export interface KeymapDeps {
 export function createKeymap(deps: KeymapDeps): KeyEntry[] {
   const wm = deps.windowManager;
   const monitor = () => wm.getCurrentMonitorName();
-  const tiled = () => wm.isCurrentWorkspaceTiled();
   const spawn = (command: string | string[]) => () => {
     COMPOSITOR.process.spawn({ command });
   };
-  // A key that does one thing in a tiled workspace and another when floating.
-  const byMode = (tiling: () => void, floating: () => void) => () => {
-    if (tiled()) {
-      tiling();
+  const nothing = () => {};
+  // A key that does one thing in each layout mode of the workspace.
+  const byMode = (tiled: () => void, scrolling: () => void, floating: () => void) => () => {
+    const mode = wm.currentWorkspaceMode();
+    if (mode === "tiled") {
+      tiled();
+    } else if (mode === "scrolling") {
+      scrolling();
     } else {
       floating();
     }
@@ -225,111 +237,168 @@ export function createKeymap(deps: KeymapDeps): KeyEntry[] {
       binds: [{ keys: "Super+F", action: () => wm.toggleFocusedWindowFullscreen() }],
     },
     {
+      id: "layout-mode",
+      group: "Windows",
+      description: "Layout of this workspace: tiled, scrolling, floating (next one)",
+      binds: [{ keys: "Super+Space", action: changesLayout(() => wm.cycleCurrentWorkspaceMode()) }],
+    },
+    {
       id: "toggle-tiling",
       group: "Windows",
-      description: "Tiling on / off for this workspace",
+      description: "Floating on / off for this workspace (off: back to tiled or scrolling)",
       binds: [{ keys: "Super+S", action: changesLayout(() => wm.toggleCurrentWorkspaceTiling()) }],
     },
 
-    // Arrow keys: tiling and floating
+    // Arrow keys: tiled, scrolling and floating
     {
       id: "arrows-left-right",
-      group: "Tiling",
+      group: "Scrolling",
       label: "Super+Left / Right",
       description: "",
-      tiling: "Focus the tile on the left / right",
+      tiled: "Focus the window on the left / right (at the edge: the workspace there)",
+      scrolling: "Focus the tile on the left / right",
       floating: "Left / right half of the screen",
       binds: [
         {
           keys: "Super+Left",
           name: "tile-focus-left-quick",
-          action: byMode(() => wm.focusTile(-1), () => wm.placeFocusedWindowInHalf("left")),
+          action: byMode(
+            changesLayout(() => wm.focusTiledDirection("left")),
+            () => wm.focusTile(-1),
+            () => wm.placeFocusedWindowInHalf("left"),
+          ),
         },
         {
           keys: "Super+Right",
           name: "tile-focus-right-quick",
-          action: byMode(() => wm.focusTile(1), () => wm.placeFocusedWindowInHalf("right")),
+          action: byMode(
+            changesLayout(() => wm.focusTiledDirection("right")),
+            () => wm.focusTile(1),
+            () => wm.placeFocusedWindowInHalf("right"),
+          ),
         },
       ],
     },
     {
       id: "arrow-up",
-      group: "Tiling",
+      group: "Scrolling",
       label: "Super+Up",
       description: "",
-      tiling: "Focus the tile above (in a stack)",
+      tiled: "Focus the window above",
+      scrolling: "Focus the tile above (in a stack)",
       floating: "Maximize / restore",
-      binds: [{ keys: "Super+Up", action: byMode(() => wm.focusInColumn(-1), () => wm.toggleFocusedWindowMaximize()) }],
+      binds: [
+        {
+          keys: "Super+Up",
+          action: byMode(
+            () => wm.focusTiledDirection("up"),
+            () => wm.focusInColumn(-1),
+            () => wm.toggleFocusedWindowMaximize(),
+          ),
+        },
+      ],
     },
     {
       id: "arrow-down",
-      group: "Tiling",
+      group: "Scrolling",
       label: "Super+Down",
       description: "",
-      tiling: "Focus the tile below (in a stack)",
+      tiled: "Focus the window below",
+      scrolling: "Focus the tile below (in a stack)",
       floating: "Bottom half; again: top half",
       binds: [
         {
           keys: "Super+Down",
-          action: byMode(() => wm.focusInColumn(1), () => wm.placeFocusedWindowInHalf("bottom-then-top")),
+          action: byMode(
+            () => wm.focusTiledDirection("down"),
+            () => wm.focusInColumn(1),
+            () => wm.placeFocusedWindowInHalf("bottom-then-top"),
+          ),
         },
       ],
     },
     {
       id: "shift-arrows-left-right",
-      group: "Tiling",
+      group: "Scrolling",
       label: "Super+Shift+Left / Right",
       description: "",
-      tiling: "Move the tile left / right",
+      tiled: "Swap with the window on the left / right (at the edge: move to that workspace)",
+      scrolling: "Move the tile left / right",
       floating: "Left / right half of the screen",
       binds: [
         {
           keys: "Super+Shift+Left",
-          action: byMode(changesLayout(() => wm.moveFocusedTile(-1)), () => wm.placeFocusedWindowInHalf("left")),
+          action: byMode(
+            changesLayout(() => wm.swapTiledDirection("left")),
+            changesLayout(() => wm.moveFocusedTile(-1)),
+            () => wm.placeFocusedWindowInHalf("left"),
+          ),
         },
         {
           keys: "Super+Shift+Right",
-          action: byMode(changesLayout(() => wm.moveFocusedTile(1)), () => wm.placeFocusedWindowInHalf("right")),
+          action: byMode(
+            changesLayout(() => wm.swapTiledDirection("right")),
+            changesLayout(() => wm.moveFocusedTile(1)),
+            () => wm.placeFocusedWindowInHalf("right"),
+          ),
         },
       ],
     },
     {
       id: "shift-arrows-up-down",
-      group: "Tiling",
+      group: "Scrolling",
       label: "Super+Shift+Up / Down",
       description: "",
-      tiling: "Move the tile up / down in its stack",
+      tiled: "Swap with the window above / below",
+      scrolling: "Move the tile up / down in its stack",
       floating: "Top / bottom half of the screen",
       binds: [
         {
           keys: "Super+Shift+Up",
-          action: byMode(changesLayout(() => wm.moveFocusedInColumn(-1)), () => wm.placeFocusedWindowInHalf("top")),
+          action: byMode(
+            changesLayout(() => wm.swapTiledDirection("up")),
+            changesLayout(() => wm.moveFocusedInColumn(-1)),
+            () => wm.placeFocusedWindowInHalf("top"),
+          ),
         },
         {
           keys: "Super+Shift+Down",
-          action: byMode(changesLayout(() => wm.moveFocusedInColumn(1)), () => wm.placeFocusedWindowInHalf("bottom")),
+          action: byMode(
+            changesLayout(() => wm.swapTiledDirection("down")),
+            changesLayout(() => wm.moveFocusedInColumn(1)),
+            () => wm.placeFocusedWindowInHalf("bottom"),
+          ),
         },
       ],
     },
 
-    // Tiling only
+    // Tiled only
+    {
+      id: "flip-split",
+      group: "Tiled",
+      label: "Super+J",
+      description: "Flip the split of the window: side by side <-> top and bottom",
+      binds: [{ keys: "Super+J", action: changesLayout(() => wm.flipFocusedSplit()) }],
+    },
+
+    // Scrolling only
     {
       id: "stack",
-      group: "Tiling",
+      group: "Scrolling",
       label: "Super+Comma",
       description: "Stack the tile under the column on its left (first column: pull the next one in)",
       binds: [{ keys: "Super+Comma", action: changesLayout(() => wm.stackFocusedIntoLeftColumn()) }],
     },
     {
       id: "unstack",
-      group: "Tiling",
+      group: "Scrolling",
       label: "Super+Period",
       description: "Take the tile out of its stack",
       binds: [{ keys: "Super+Period", action: changesLayout(() => wm.unstackFocusedWindow()) }],
     },
     {
       id: "column-width-preset",
-      group: "Tiling",
+      group: "Scrolling",
       // Super+Shift+R reloads the config (built into the compositor), so the
       // reverse cycle takes Ctrl.
       label: "Super+R / Super+Ctrl+R",
@@ -341,19 +410,37 @@ export function createKeymap(deps: KeymapDeps): KeyEntry[] {
     },
     {
       id: "column-width-step",
-      group: "Tiling",
+      group: "Scrolling",
       label: "Super+- / Super+=",
-      description: `Column narrower / wider (${TILE_WIDTH_STEP} px)`,
+      description: "",
+      tiled: `The window gets ${TILED_RESIZE_PERCENT}% less / more of its split`,
+      scrolling: `Column narrower / wider (${TILE_WIDTH_STEP} px)`,
       binds: [
-        { keys: "Super+Minus", action: changesLayout(() => wm.resizeFocusedColumn(-TILE_WIDTH_STEP)) },
-        { keys: "Super+Equal", action: changesLayout(() => wm.resizeFocusedColumn(TILE_WIDTH_STEP)) },
+        {
+          keys: "Super+Minus",
+          action: byMode(
+            changesLayout(() => wm.resizeFocusedSplit(-TILED_RESIZE_STEP)),
+            changesLayout(() => wm.resizeFocusedColumn(-TILE_WIDTH_STEP)),
+            nothing,
+          ),
+        },
+        {
+          keys: "Super+Equal",
+          action: byMode(
+            changesLayout(() => wm.resizeFocusedSplit(TILED_RESIZE_STEP)),
+            changesLayout(() => wm.resizeFocusedColumn(TILE_WIDTH_STEP)),
+            nothing,
+          ),
+        },
       ],
     },
     {
       id: "tile-scroll",
-      group: "Tiling",
+      group: "Scrolling",
       label: "Super+Wheel",
-      description: "Scroll along the tiles",
+      description: "",
+      tiled: "Focus the previous / next window",
+      scrolling: "Scroll along the tiles",
       binds: [
         { keys: "Super+WheelScrollUp", action: () => wm.focusTile(-1) },
         { keys: "Super+WheelScrollDown", action: () => wm.focusTile(1) },
@@ -570,9 +657,17 @@ export function keymapRows(entries: readonly KeyEntry[]): KeyRow[] {
       continue;
     }
     const keys = entry.label ?? entry.binds.map((bind) => bind.keys).join(" / ");
-    if (entry.tiling !== undefined && entry.floating !== undefined) {
-      rows.push({ group: "Tiling", keys, description: entry.tiling });
-      rows.push({ group: "Floating", keys, description: entry.floating });
+    const byMode: [KeyGroup, string | undefined][] = [
+      ["Tiled", entry.tiled],
+      ["Scrolling", entry.scrolling],
+      ["Floating", entry.floating],
+    ];
+    if (byMode.some(([, description]) => description !== undefined)) {
+      for (const [group, description] of byMode) {
+        if (description !== undefined) {
+          rows.push({ group, keys, description });
+        }
+      }
     } else {
       rows.push({ group: entry.group, keys, description: entry.description });
     }

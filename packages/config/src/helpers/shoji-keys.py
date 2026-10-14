@@ -14,14 +14,14 @@ HELP = """\
 Usage: shoji-keys [GROUP]
        shoji-keys --help
 
-Print every ShojiWM key binding, grouped (Apps, Windows, Tiling, Floating,
-Workspaces, Switchers, Screenshots, Session, Debug).
+Print every ShojiWM key binding, grouped (Apps, Windows, Tiled, Scrolling,
+Floating, Workspaces, Switchers, Screenshots, Session, Debug).
 
-  GROUP   Print only that group, for example: shoji-keys tiling
+  GROUP   Print only that group, for example: shoji-keys tiled
 
-Some keys do two things: one when the workspace tiles, one when it floats.
-Super+S switches the mode. Those keys are in both the Tiling and the Floating
-groups.
+Some keys do a different thing in each layout mode of the workspace: tiled,
+scrolling or floating. Super+Space switches the mode, Super+S turns floating
+on and off. Those keys are in the Tiled, Scrolling and Floating groups.
 
 Super+/ shows the same list on screen.
 

@@ -52,7 +52,7 @@ import {
   WINDOW_STATE_VISIBLE_OUTPUTS,
   WINDOW_STATE_RECT,
   WINDOW_STATE_WORKSPACE_VISIBLE,
-  WINDOW_STATE_WORKSPACE_OFFSET_Y,
+  WINDOW_STATE_WORKSPACE_OFFSET_X,
   WINDOW_STATE_WORKSPACE_OPACITY,
 } from "./window-manager";
 import { ISLAND_GLASS } from "./effect/island-glass";
@@ -1395,14 +1395,15 @@ COMPOSITOR.window.composition = (window: WaylandWindow) => {
 
   const useClientDecoration = usesClientDecoration(window.decoration());
   const workspaceVisible = window.state[WINDOW_STATE_WORKSPACE_VISIBLE];
-  const workspaceOffsetY = window.state[WINDOW_STATE_WORKSPACE_OFFSET_Y];
+  const workspaceOffsetX = window.state[WINDOW_STATE_WORKSPACE_OFFSET_X];
   const workspaceOpacity = window.state[WINDOW_STATE_WORKSPACE_OPACITY];
   const tileDragging = window.state[WINDOW_STATE_TILE_DRAGGING];
   const managedRect = computed(() => {
     const rect = window.state[WINDOW_STATE_RECT]();
     return {
-      x: read(rect.x),
-      y: read(rect.y) + workspaceOffsetY(),
+      // Workspaces sit in one row: a switch slides them sideways.
+      x: read(rect.x) + workspaceOffsetX(),
+      y: read(rect.y),
       width: read(rect.width),
       height: read(rect.height),
     };

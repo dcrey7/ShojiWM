@@ -4820,6 +4820,26 @@ COMPOSITOR.rendering.surfacePolicy = () => ({ opaqueRegion: "ignore" });
         })
     }
 
+    /// One floating workspace. New workspaces start tiled, so tests of the
+    /// floating-only behaviour must ask for a floating one.
+    fn floating_workspace_persisted_state() -> serde_json::Value {
+        serde_json::json!({
+            "config.hybrid-window-manager": {
+                "currentMonitor": "TEST-1",
+                "activeWorkspaceByMonitor": [["TEST-1", 1]],
+                "workspaces": [{
+                    "monitor": "TEST-1",
+                    "index": 1,
+                    "isTiled": false,
+                    "mode": "floating",
+                    "activeWindowId": null,
+                    "scrollOffset": 0,
+                    "windows": [],
+                }],
+            },
+        })
+    }
+
     fn launch_scenario_z_indices(second_window_maximized: bool, tiled: bool) -> (i32, i32) {
         let evaluator = real_config_evaluator();
         let mut display_state = std::collections::BTreeMap::new();
@@ -4914,8 +4934,8 @@ COMPOSITOR.rendering.surfacePolicy = () => ({ opaqueRegion: "ignore" });
         display_state.insert("TEST-1".to_string(), test_output_snapshot("TEST-1"));
         evaluator.set_display_state(display_state);
         evaluator
-            .lifecycle_enable("initial", None)
-            .expect("initial lifecycle should succeed");
+            .lifecycle_enable("reload", Some(&floating_workspace_persisted_state()))
+            .expect("reload lifecycle should succeed");
 
         let window = make_named_window("0xa", "kitty-float", false, false);
         evaluator
@@ -5042,8 +5062,8 @@ COMPOSITOR.rendering.surfacePolicy = () => ({ opaqueRegion: "ignore" });
         display_state.insert("TEST-1".to_string(), test_output_snapshot("TEST-1"));
         evaluator.set_display_state(display_state);
         evaluator
-            .lifecycle_enable("initial", None)
-            .expect("initial lifecycle should succeed");
+            .lifecycle_enable("reload", Some(&floating_workspace_persisted_state()))
+            .expect("reload lifecycle should succeed");
 
         let window = make_named_window("0xa", "kitty-float", false, false);
         evaluator

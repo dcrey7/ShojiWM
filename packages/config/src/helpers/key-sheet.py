@@ -42,7 +42,8 @@ KEYS_FILE = f"{runtime_dir()}/shojiwm-keys.json"
 SHOWN_GROUPS = [
     "Apps",
     "Windows",
-    "Tiling",
+    "Tiled",
+    "Scrolling",
     "Floating",
     "Workspaces",
     "Switchers",
@@ -50,7 +51,8 @@ SHOWN_GROUPS = [
     "Session",
 ]
 GROUP_NOTES = {
-    "Tiling": "When the workspace tiles (Super+S)",
+    "Tiled": "When the workspace is tiled (Super+Space)",
+    "Scrolling": "When the workspace scrolls (Super+Space)",
     "Floating": "When the workspace floats (Super+S)",
 }
 # Key names as the keycaps show them.
