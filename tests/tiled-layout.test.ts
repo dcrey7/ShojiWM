@@ -15,8 +15,10 @@ import {
   resize,
   resizeSoloShare,
   siblingLeaf,
+  stackOnto,
   swap,
   TILED_RESIZE_STEP,
+  unstack,
   type TileRect,
   type TileTree,
 } from "../packages/config/src/tiled-layout";
@@ -245,6 +247,29 @@ test("cycleSoloShare: a lone window steps 1/3, 1/2, 2/3, full", () => {
   assert.equal(cycleSoloShare(1, -1, WIDE), 2 / 3);
   // 1366 wide: 1/3 is 455 px, under 600, so it is skipped.
   assert.equal(cycleSoloShare(1, 1, SMALL), 1 / 2);
+});
+
+test("stackOnto puts a window under its left neighbour; unstack undoes it", () => {
+  // 2 side by side: stack 2 under 1. 1 above, 2 below, full width.
+  const two = open(WIDE, 2);
+  const stacked = stackOnto(two, "2", "1", WIDE, GAP);
+  assert.deepEqual(rects(stacked)[1], [0, 0, 2560, 714]);
+  assert.deepEqual(rects(stacked)[2], [0, 726, 2560, 714]);
+  // Super+Period: back to side by side.
+  assert.deepEqual(rects(unstack(stacked, "2", WIDE, GAP)), rects(two));
+
+  // 3 windows (1 | 2 over 3): stack 3 under 1. 2 gets the right side.
+  const three = open(WIDE, 3);
+  const moved = stackOnto(three, "3", "1", WIDE, GAP);
+  assert.deepEqual(rects(moved)[1], [0, 0, 1274, 714]);
+  assert.deepEqual(rects(moved)[3], [0, 726, 1274, 714]);
+  assert.deepEqual(rects(moved)[2], [1286, 0, 1274, 1440]);
+
+  // A window that is not in a stack: nothing happens.
+  assert.equal(unstack(two, "1", WIDE, GAP), two);
+  // 1366 x 768: two stacked would be under 400 px high.
+  const small = open(SMALL, 2);
+  assert.equal(stackOnto(small, "2", "1", SMALL, GAP), small);
 });
 
 test("resizeSoloShare stays between the min width and full", () => {

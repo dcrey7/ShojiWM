@@ -42,8 +42,10 @@ import {
   resize as resizeTileSplit,
   resizeSoloShare,
   siblingLeaf,
+  stackOnto as stackTile,
   swap as swapTiles,
   TILED_MIN_WIDTH,
+  unstack as unstackTile,
   type TileDirection,
   type TileRect,
   type TileTree,
@@ -1804,6 +1806,16 @@ export class HybridWindowManager {
       }
       this.applyWorkspaceStackPolicy(workspace);
     });
+  }
+
+  /** Tiled mode, Super+Comma: stack the focused window under its left neighbour. */
+  public stackFocusedTile() {
+    this.runOnTiledLayout((workspace) => workspace.stackFocusedTile());
+  }
+
+  /** Tiled mode, Super+Period: take the focused window out of its stack. */
+  public unstackFocusedTile() {
+    this.runOnTiledLayout((workspace) => workspace.unstackFocusedTile());
   }
 
   /** Move the focused tile to the bottom of the column on its left. */
@@ -5430,6 +5442,58 @@ export class Workspace {
   }
 
   /** Tiled mode: flip the split of the focused window. */
+  /**
+   * Tiled mode, Super+Comma: stack the focused window under the window on
+   * its left. On the left edge, pull the window on its right in below it.
+   */
+  public stackFocusedTile(): boolean {
+    if (this.mode !== "tiled") {
+      return false;
+    }
+    this.syncTree();
+    const id = this.tiledAnchorId();
+    const window = id ? this.findWindowById(id) : undefined;
+    if (!id || !window) {
+      return false;
+    }
+    const area = this.tiledArea();
+    const rects = tileLayout(this.tree, area, TILE_GAP);
+    const order = this.recentFocusOrder();
+    const left = tileNeighbour(rects, id, "left", order);
+    const right = left ? null : tileNeighbour(rects, id, "right", order);
+    const next = left
+      ? stackTile(this.tree, id, left, area, TILE_GAP)
+      : right
+        ? stackTile(this.tree, right, id, area, TILE_GAP)
+        : this.tree;
+    if (next === this.tree) {
+      return false;
+    }
+    this.tree = next;
+    this.commitTreeChange(window);
+    return true;
+  }
+
+  /** Tiled mode, Super+Period: take the focused window out of its stack. */
+  public unstackFocusedTile(): boolean {
+    if (this.mode !== "tiled") {
+      return false;
+    }
+    this.syncTree();
+    const id = this.tiledAnchorId();
+    const window = id ? this.findWindowById(id) : undefined;
+    if (!id || !window) {
+      return false;
+    }
+    const next = unstackTile(this.tree, id, this.tiledArea(), TILE_GAP);
+    if (next === this.tree) {
+      return false;
+    }
+    this.tree = next;
+    this.commitTreeChange(window);
+    return true;
+  }
+
   public flipFocusedSplit(): boolean {
     if (this.mode !== "tiled") {
       return false;

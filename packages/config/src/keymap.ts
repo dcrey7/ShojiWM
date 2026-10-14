@@ -386,15 +386,37 @@ export function createKeymap(deps: KeymapDeps): KeyEntry[] {
       id: "stack",
       group: "Scrolling",
       label: "Super+Comma",
-      description: "Stack the tile under the column on its left (first column: pull the next one in)",
-      binds: [{ keys: "Super+Comma", action: changesLayout(() => wm.stackFocusedIntoLeftColumn()) }],
+      description: "",
+      tiled: "Stack the window under the window on its left (left edge: pull the next one in)",
+      scrolling: "Stack the tile under the column on its left (first column: pull the next one in)",
+      binds: [
+        {
+          keys: "Super+Comma",
+          action: byMode(
+            changesLayout(() => wm.stackFocusedTile()),
+            changesLayout(() => wm.stackFocusedIntoLeftColumn()),
+            nothing,
+          ),
+        },
+      ],
     },
     {
       id: "unstack",
       group: "Scrolling",
       label: "Super+Period",
-      description: "Take the tile out of its stack",
-      binds: [{ keys: "Super+Period", action: changesLayout(() => wm.unstackFocusedWindow()) }],
+      description: "",
+      tiled: "Take the window out of its stack, into its own column on the right",
+      scrolling: "Take the tile out of its stack",
+      binds: [
+        {
+          keys: "Super+Period",
+          action: byMode(
+            changesLayout(() => wm.unstackFocusedTile()),
+            changesLayout(() => wm.unstackFocusedWindow()),
+            nothing,
+          ),
+        },
+      ],
     },
     {
       id: "column-width-preset",

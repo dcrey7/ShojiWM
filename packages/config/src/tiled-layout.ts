@@ -490,6 +490,93 @@ export function flip(tree: TileTree, id: string): TileTree {
 }
 
 /**
+ * Super+Comma: move `id` into a stack under `targetId`. The target's cell
+ * is cut top and bottom; `id` goes below. The same tree comes back when a
+ * window would go under the minimum size.
+ */
+export function stackOnto(
+  tree: TileTree,
+  id: string,
+  targetId: string,
+  area: TileRect,
+  gap: number,
+  limits: TileLimits = DEFAULT_TILE_LIMITS,
+): TileTree {
+  if (!tree || id === targetId || !hasLeaf(tree, id) || !hasLeaf(tree, targetId)) {
+    return tree;
+  }
+  const rest = remove(tree, id);
+  if (!rest) {
+    return tree;
+  }
+  const next = replaceLeaf(rest, targetId, {
+    kind: "split",
+    direction: "column",
+    ratio: 0.5,
+    first: { kind: "leaf", id: targetId },
+    second: { kind: "leaf", id },
+  });
+  return keepIfFits(tree, next, area, gap, limits);
+}
+
+/**
+ * Super+Period: take `id` out of its stack. Its stack (a top and bottom
+ * split) turns into a side by side split, `id` on the right. The same tree
+ * comes back when `id` is not in a stack or a window would get too small.
+ */
+export function unstack(
+  tree: TileTree,
+  id: string,
+  area: TileRect,
+  gap: number,
+  limits: TileLimits = DEFAULT_TILE_LIMITS,
+): TileTree {
+  if (!tree || !hasLeaf(tree, id)) {
+    return tree;
+  }
+  const visit = (node: TileNode): TileNode => {
+    if (node.kind === "leaf") {
+      return node;
+    }
+    const isFirst = node.first.kind === "leaf" && node.first.id === id;
+    const isSecond = node.second.kind === "leaf" && node.second.id === id;
+    if (isFirst || isSecond) {
+      if (node.direction !== "column") {
+        return node;
+      }
+      return {
+        kind: "split",
+        direction: "row",
+        ratio: 0.5,
+        first: isFirst ? node.second : node.first,
+        second: { kind: "leaf", id },
+      };
+    }
+    return hasLeaf(node.first, id)
+      ? { ...node, first: visit(node.first) }
+      : { ...node, second: visit(node.second) };
+  };
+  return keepIfFits(tree, visit(tree), area, gap, limits);
+}
+
+/** `next`, unless it makes a window too small that was not too small before. */
+function keepIfFits(
+  tree: TileTree,
+  next: TileTree,
+  area: TileRect,
+  gap: number,
+  limits: TileLimits,
+): TileTree {
+  if (
+    fitsMinSize(tree, area, gap, limits) &&
+    !fitsMinSize(next, area, gap, limits)
+  ) {
+    return tree;
+  }
+  return next;
+}
+
+/**
  * The smallest size `node` can have along `axis` when no window in it goes
  * under the minimum size.
  */
