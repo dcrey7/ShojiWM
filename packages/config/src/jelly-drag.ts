@@ -10,6 +10,7 @@ import {
   type WindowPosition,
 } from "shoji_wm";
 import { setAnimationRunning } from "./animation-activity";
+import { qualityMinimal, recordAnimationFrame } from "./quality";
 import type {
   ShaderUniformMap,
   WindowEffectAssignment,
@@ -51,8 +52,12 @@ const STOP_VELOCITY = 0.5;
 const MIN_ACCELERATION = 0;
 const MAX_ACCELERATION = 1000;
 const STOP_ACCELERATION = 0.5;
-/** KWin's physics step, in ms. */
-const STEP_MS = 10;
+/**
+ * The physics step, in ms: one frame at 144 Hz. Every step is this long, and
+ * the drawing blends the last two steps, so a late frame does not make the
+ * window jump. (KWin steps up to 10 ms of whatever the frame took.)
+ */
+const STEP_MS = 1000 / 144;
 /** The farthest the drawing may bend, in logical px. Also the effect margin. */
 const MAX_BEND_PX = 250;
 /** Window opacity while dragged, like KDE's Translucency effect (80%). */
@@ -113,6 +118,13 @@ interface Wobble {
   velY: Float64Array;
   accX: Float64Array;
   accY: Float64Array;
+  /** The positions one step earlier, to blend with the current ones. */
+  prevX: Float64Array;
+  prevY: Float64Array;
+  /** Frame time not yet used by a physics step, in ms. */
+  leftMs: number;
+  /** False once the springs came to rest. */
+  wobbling: boolean;
   /** Set once the springs have reset for a fresh wobble. */
   started: boolean;
   poll: PollHandle | null;
@@ -120,6 +132,14 @@ interface Wobble {
 }
 
 const wobbles = new Map<string, Wobble>();
+
+/** Frame-to-frame times (ms) of the last few wobbles, for `jellyDragDebug`. */
+const debugRuns: { windowId: string; deltas: number[] }[] = [];
+
+/** The last few wobbles with their frame times (debug IPC). */
+export function jellyDragDebug(): readonly { windowId: string; deltas: number[] }[] {
+  return debugRuns;
+}
 
 function wobbleFor(window: WaylandWindow): Wobble {
   let wobble = wobbles.get(window.id);
@@ -157,6 +177,10 @@ function wobbleFor(window: WaylandWindow): Wobble {
     velY: new Float64Array(COUNT),
     accX: new Float64Array(COUNT),
     accY: new Float64Array(COUNT),
+    prevX: new Float64Array(COUNT),
+    prevY: new Float64Array(COUNT),
+    leftMs: 0,
+    wobbling: true,
     started: false,
     poll: null,
     lastMs: null,
@@ -187,6 +211,10 @@ function resetGrid(wobble: Wobble, rect: WindowPosition) {
     wobble.velY[i] = 0;
     wobble.constraint[i] = false;
   }
+  wobble.prevX.set(wobble.posX);
+  wobble.prevY.set(wobble.posY);
+  wobble.leftMs = 0;
+  wobble.wobbling = true;
 }
 
 /** Average every value with the points around it (KWin: heightRingLinearMean). */
@@ -264,15 +292,20 @@ function step(wobble: Wobble, rect: WindowPosition, time: number) {
   return !(accSum < STOP_ACCELERATION && velSum < STOP_VELOCITY);
 }
 
-/** Send the bend of every point to the shader. */
-function publish(wobble: Wobble, rect: WindowPosition, still: boolean) {
+/**
+ * Send the bend of every point to the shader. `blend` (0 to 1) is how far
+ * the drawing is between the previous step and the current one.
+ */
+function publish(wobble: Wobble, rect: WindowPosition, still: boolean, blend: number) {
   let biggest = 0;
   const bendX = new Float64Array(COUNT);
   const bendY = new Float64Array(COUNT);
   if (!still) {
     for (let i = 0; i < COUNT; i++) {
-      bendX[i] = wobble.posX[i] - originX(rect, i);
-      bendY[i] = wobble.posY[i] - originY(rect, i);
+      const x = wobble.prevX[i] + (wobble.posX[i] - wobble.prevX[i]) * blend;
+      const y = wobble.prevY[i] + (wobble.posY[i] - wobble.prevY[i]) * blend;
+      bendX[i] = x - originX(rect, i);
+      bendY[i] = y - originY(rect, i);
       biggest = Math.max(biggest, Math.hypot(bendX[i], bendY[i]));
     }
   }
@@ -301,18 +334,22 @@ function fade(wobble: Wobble, ms: number) {
 /** Run the physics for one frame (KWin: prePaintWindow). Returns false once done. */
 function frame(wobble: Wobble, deltaMs: number) {
   const rect = rectOf(wobble);
-  let wobbling = true;
-  // KWin splits the frame time into steps of at most 10 ms.
-  for (let left = deltaMs; left > 0; left -= STEP_MS) {
-    wobbling = step(wobble, rect, Math.min(left, STEP_MS));
-    if (!wobbling) {
+  // Whole steps only; the rest of the frame time waits for the next frame.
+  wobble.leftMs += deltaMs;
+  while (wobble.leftMs >= STEP_MS) {
+    wobble.leftMs -= STEP_MS;
+    wobble.prevX.set(wobble.posX);
+    wobble.prevY.set(wobble.posY);
+    wobble.wobbling = step(wobble, rect, STEP_MS);
+    if (!wobble.wobbling) {
+      wobble.leftMs = 0;
       break;
     }
   }
   const opacity = fade(wobble, deltaMs);
-  const done = !wobble.dragging && !wobbling && opacity === 1;
+  const done = !wobble.dragging && !wobble.wobbling && opacity === 1;
   // Like KWin, draw the window flat while the springs are at rest.
-  publish(wobble, rect, !wobbling);
+  publish(wobble, rect, !wobble.wobbling, wobble.leftMs / STEP_MS);
   return !done;
 }
 
@@ -321,6 +358,11 @@ function startPoll(wobble: Wobble) {
     return;
   }
   wobble.lastMs = null;
+  const run = { windowId: wobble.window.id, deltas: [] as number[] };
+  debugRuns.push(run);
+  if (debugRuns.length > 8) {
+    debugRuns.shift();
+  }
   wobble.poll = wobble.window.createPoll(
     1,
     (handle) => {
@@ -328,6 +370,8 @@ function startPoll(wobble: Wobble) {
       const delta =
         wobble.lastMs === null ? 0 : Math.min(handle.nowMs - wobble.lastMs, 100);
       wobble.lastMs = handle.nowMs;
+      run.deltas.push(Math.round(delta * 10) / 10);
+      recordAnimationFrame(delta);
       if (!frame(wobble, delta)) {
         handle.cancel();
         wobble.poll = null;
@@ -342,6 +386,10 @@ function startPoll(wobble: Wobble) {
 
 /** Feed every interactive window move here (KWin: start/step/finish UserMovedResized). */
 export function jellyDragOnWindowMove(event: WindowMoveEvent) {
+  // A slow machine gets no wobble: the window just moves.
+  if (qualityMinimal.peek() && !wobbles.get(event.window.id)?.poll) {
+    return;
+  }
   const wobble = wobbleFor(event.window);
   const rect = event.currentRect;
   wobble.dragRect = rect;

@@ -11,6 +11,7 @@ import {
   type WaylandWindow,
 } from "shoji_wm";
 import { setAnimationRunning } from "./animation-activity";
+import { qualityMinimal, recordAnimationFrame } from "./quality";
 import type {
   WindowEffectAssignment,
   WindowEffectHandle,
@@ -435,6 +436,11 @@ export function magicLampStart(
   onDone: () => void,
   options: { opening?: boolean } = {},
 ): number {
+  // A slow machine gets no lamp: the window minimizes or restores at once.
+  if (qualityMinimal.peek()) {
+    onDone();
+    return 1;
+  }
   const lamp = lampFor(window);
   if (!lamp.poll) {
     // A fresh animation (KWin: a running one only turns around).
@@ -501,6 +507,7 @@ export function magicLampStart(
         const raw = lamp.lastMs === null ? 0 : handle.nowMs - lamp.lastMs;
         lamp.lastMs = handle.nowMs;
         lamp.run?.deltas.push(Math.round(raw * 10) / 10);
+        recordAnimationFrame(raw);
         // A stalled frame (the shader's first compile, a busy main loop)
         // slows the lamp down instead of skipping it.
         const delta = Math.min(raw, MAX_FRAME_STEP_MS);

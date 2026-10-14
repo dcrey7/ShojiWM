@@ -57,6 +57,7 @@ import {
 } from "./window-manager";
 import { ISLAND_GLASS } from "./effect/island-glass";
 import { animationRunning } from "./animation-activity";
+import { qualityDebug, qualityLight } from "./quality";
 import { createCoverflow } from "./coverflow";
 import { createFlip3D } from "./flip-3d";
 import { broadcastSwitcherLabel } from "./switcher-label";
@@ -64,6 +65,7 @@ import { createWindowGrid, createWindowView } from "./window-grid";
 import { bindKeymap, createKeymap, keymapRows, runChord, writeKeymapFile } from "./keymap";
 import type { TitlebarButton } from "./window-switcher";
 import {
+  jellyDragDebug,
   jellyDragEffect,
   jellyDragForget,
   jellyDragOnWindowMove,
@@ -228,9 +230,10 @@ const SWITCHERS = {
 
 // No glass while a switcher is open, or while a window animates (Magic
 // Lamp, wobbly drag): redoing the blur on every frame of an animation
-// drops frames when another program keeps the GPU busy.
+// drops frames when another program keeps the GPU busy. Also no glass when
+// the machine is too slow for it (quality.ts).
 const GLASS_PAUSED = computed(
-  () => SWITCHERS.blurSuspended() || animationRunning(),
+  () => SWITCHERS.blurSuspended() || animationRunning() || qualityLight(),
 );
 
 // Window backdrop effects end with this stage so they can fade back in after
@@ -559,6 +562,9 @@ if (WINDOW_SWITCHER_STYLE === "coverflow") {
 WORKSPACE_IPC.handle("debug.slidingPopups", (params) => {
   slidingPopupsDebug((params as { durationMs?: number | null } | undefined)?.durationMs ?? null);
 });
+
+WORKSPACE_IPC.handle("debug.wobble", () => ({ runs: jellyDragDebug() }));
+WORKSPACE_IPC.handle("debug.quality", () => qualityDebug());
 
 WORKSPACE_IPC.handle("debug.magicLamp", (params) => ({
   runs: magicLampDebug(
@@ -1039,6 +1045,10 @@ COMPOSITOR.effect.window = (window) =>
   magicLampEffect(window) ?? (JELLY_DRAG ? jellyDragEffect(window) : null);
 
 COMPOSITOR.effect.layer = (layer) => {
+  // No layer blur (the panel, popups) while the glass is paused.
+  if (GLASS_PAUSED()) {
+    return {};
+  }
   const namespace = layer.namespace();
   // Both the LiquidIsland experiment and shoji-bar-3 draw only a translucent
   // silhouette and let the compositor recover the shape from its alpha.
@@ -1426,12 +1436,16 @@ COMPOSITOR.window.composition = (window: WaylandWindow) => {
   // A soft drop shadow under the frame; the focused window floats a bit higher.
   // The window selected in the window switcher glows white instead (it fits
   // in the switcher's texture margin).
+  // No shadows while a window animates (the GPU time goes to the
+  // animation), or when the machine is too slow for them.
   const windowShadow = computed(() =>
-    SWITCHERS.selectedWindowId() === window.id
-      ? [{ blur: 28, spread: 4, color: "#ffffffd0" }]
-      : window.isFocused()
-        ? [{ y: 10, blur: 32, spread: -2, color: "#00000090" }]
-        : [{ y: 4, blur: 16, spread: -2, color: "#00000060" }],
+    animationRunning() || qualityLight()
+      ? []
+      : SWITCHERS.selectedWindowId() === window.id
+        ? [{ blur: 28, spread: 4, color: "#ffffffd0" }]
+        : window.isFocused()
+          ? [{ y: 10, blur: 32, spread: -2, color: "#00000090" }]
+          : [{ y: 4, blur: 16, spread: -2, color: "#00000060" }],
   );
   const titlebarBackground = window.isFocused((focused) =>
     focused ? "#1f243080" : "#2a2f3a80",
