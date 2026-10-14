@@ -216,6 +216,8 @@ const WORKSPACE_SWITCH_ANIMATION_DURATION = TILE_ANIMATION_DURATION;
 const WORKSPACE_OVERFLOW_SLIDE_DURATION = seconds(0.22);
 /** How long a restored tiled layout keeps cells for windows not back yet. */
 const RESTORED_TREE_WAIT_MS = 3000;
+/** How far the mouse must move to take the focus back after a focus key. */
+const KEYBOARD_FOCUS_POINTER_SLOP_PX = 24;
 /** A sliding workspace fades only down to this opacity (a light fade). */
 const WORKSPACE_SLIDE_MIN_OPACITY = 0.5;
 const WORKSPACE_GESTURE_FINGERS = 3;
@@ -562,6 +564,11 @@ export class HybridWindowManager {
   private workspaceScrollGestureSpeed: number | null = null;
   private workspaceGestureSpeed = { ...DEFAULT_WORKSPACE_GESTURE_SPEED };
   private lastPointerPosition: PointerMoveEvent["position"] | null = null;
+  /**
+   * Where the pointer was when a key last moved the focus or the tiles.
+   * Focus follows the mouse again only after it moves away from here.
+   */
+  private keyboardFocusPointerAnchor: PointerMoveEvent["position"] | null = null;
   private lastPointerTarget: PointerMoveEvent["target"] = { kind: "none" };
   // Broadcasts the active snap-zone preview rect to external clients (the bar).
   private snapPreviewBroadcaster: SnapPreviewBroadcaster | null = null;
@@ -1958,8 +1965,19 @@ export class HybridWindowManager {
       if (workspace?.mode !== "tiled" || !action(workspace)) {
         return;
       }
+      this.holdPointerFocus();
       this.applyWorkspaceStackPolicy(workspace);
     });
+  }
+
+  /**
+   * A key moved the focus or the tiles: the mouse keeps its hands off the
+   * focus until it really moves (see focusWindowAtPointerTarget).
+   */
+  private holdPointerFocus() {
+    this.keyboardFocusPointerAnchor = this.lastPointerPosition
+      ? { ...this.lastPointerPosition }
+      : null;
   }
 
   /**
@@ -1976,6 +1994,9 @@ export class HybridWindowManager {
       this.applyWorkspaceStackPolicy(workspace);
       return keyResult;
     });
+    if (result === "done") {
+      this.holdPointerFocus();
+    }
     if (result === "edge" && (direction === "left" || direction === "right")) {
       this.switchWorkspace(direction === "left" ? -1 : 1);
     }
@@ -1996,6 +2017,9 @@ export class HybridWindowManager {
       this.applyWorkspaceStackPolicy(workspace);
       return keyResult;
     });
+    if (result === "done") {
+      this.holdPointerFocus();
+    }
     if (result === "edge" && (direction === "left" || direction === "right")) {
       this.moveFocusedWindowToWorkspace(direction === "left" ? -1 : 1);
     }
@@ -2991,6 +3015,17 @@ export class HybridWindowManager {
   ) {
     if (target.kind !== "window" || this.pointerFocusPaused) {
       return;
+    }
+    // After a key moved the focus, a resting or jittering mouse must not
+    // take it back. Only a real move (KEYBOARD_FOCUS_POINTER_SLOP_PX) does.
+    const anchor = this.keyboardFocusPointerAnchor;
+    const position = this.lastPointerPosition;
+    if (anchor && position) {
+      const moved = Math.hypot(position.x - anchor.x, position.y - anchor.y);
+      if (moved < KEYBOARD_FOCUS_POINTER_SLOP_PX) {
+        return;
+      }
+      this.keyboardFocusPointerAnchor = null;
     }
 
     const workspace = Array.from(this.workspaces.values()).find((workspace) =>

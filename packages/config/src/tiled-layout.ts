@@ -427,18 +427,28 @@ export function cycleWidthShare(
       ratios.set(rows[level].split, rows[level].inFirst ? ratio : 1 - ratio);
       inside = inside + other + gap;
     }
-    const rebuild = (current: TileNode): TileNode => {
+    const onPath = new Set<TileSplit>(rows.map((row) => row.split));
+    const rebuild = (current: TileNode, inOtherSide: boolean): TileNode => {
       if (current.kind === "leaf") {
         return current;
       }
+      let ratio = ratios.get(current) ?? current.ratio;
+      if (mode === "even" && inOtherSide && current.direction === "row") {
+        // Even: the columns inside the other sides get the same width too.
+        const first = columnCount(current.first);
+        ratio = first / (first + columnCount(current.second));
+      }
+      const pathRow = onPath.has(current);
+      const firstOther = inOtherSide || (pathRow && !hasLeaf(current.first, id));
+      const secondOther = inOtherSide || (pathRow && !hasLeaf(current.second, id));
       return {
         ...current,
-        ratio: ratios.get(current) ?? current.ratio,
-        first: rebuild(current.first),
-        second: rebuild(current.second),
+        ratio,
+        first: rebuild(current.first, firstOther),
+        second: rebuild(current.second, secondOther),
       };
     };
-    return rebuild(tree);
+    return rebuild(tree, false);
   };
 
   let candidateTree: TileTree = tree;

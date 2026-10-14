@@ -255,6 +255,15 @@ test("cycleWidthShare works on every column of 3, nested either way", () => {
       }
     }
   }
+  // 1 | (2 | 3) with 2 at twice the width of 3: Super+R on 1 still works,
+  // and 2 and 3 even out.
+  const lopsided = row(0.25, leaf("1"), row(2 / 3, leaf("2"), leaf("3")));
+  const grown = cycleWidthShare(lopsided, "1", 1, WIDE, GAP);
+  assert.notEqual(grown, lopsided, "Super+R on the left column changed nothing");
+  const grownCells = rects(grown);
+  assert.ok(Math.abs(grownCells[1][2] - usable / 3) < 1, `1: ${grownCells[1][2]}`);
+  assert.ok(Math.abs(grownCells[2][2] - grownCells[3][2]) < 1);
+
   // Uneven: 631 | 631 | 1274. The others share the rest evenly.
   const uneven = row(0.5, row(0.5, leaf("1"), leaf("2")), leaf("3"));
   const next = cycleWidthShare(uneven, "1", 1, WIDE, GAP);
