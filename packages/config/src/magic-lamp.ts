@@ -10,6 +10,7 @@ import {
   type PollHandle,
   type WaylandWindow,
 } from "shoji_wm";
+import { setAnimationRunning } from "./animation-activity";
 import type {
   WindowEffectAssignment,
   WindowEffectHandle,
@@ -418,6 +419,7 @@ function stopLamp(lamp: Lamp) {
   lamp.poll?.cancel();
   lamp.poll = null;
   lamp.active[1](false);
+  setAnimationRunning("lamp", lamp.window.id, false);
   const done = lamp.onDone;
   lamp.onDone = null;
   done?.();
@@ -461,6 +463,7 @@ export function magicLampStart(
   lamp.outsets[1](outsetsFor(window, lamp.target));
   publish(lamp);
   lamp.active[1](true);
+  setAnimationRunning("lamp", window.id, true);
   const run: LampRun = {
     windowId: window.id,
     minimized,

@@ -9,6 +9,7 @@ import {
   type WindowMoveEvent,
   type WindowPosition,
 } from "shoji_wm";
+import { setAnimationRunning } from "./animation-activity";
 import type {
   ShaderUniformMap,
   WindowEffectAssignment,
@@ -332,6 +333,7 @@ function startPoll(wobble: Wobble) {
         wobble.poll = null;
         wobble.started = false;
         wobble.active[1](false);
+        setAnimationRunning("wobble", wobble.window.id, false);
       }
     },
     { dirty: "none" },
@@ -359,6 +361,7 @@ export function jellyDragOnWindowMove(event: WindowMoveEvent) {
   wobble.dragging = event.phase === "start" || event.phase === "update";
   if (wobble.dragging) {
     wobble.active[1](true);
+    setAnimationRunning("wobble", event.window.id, true);
     startPoll(wobble);
   }
 }
@@ -373,6 +376,7 @@ export function jellyDragEffect(
 
 /** Forget a closed window. */
 export function jellyDragForget(window: WaylandWindow) {
+  setAnimationRunning("wobble", window.id, false);
   wobbles.get(window.id)?.poll?.cancel();
   wobbles.delete(window.id);
 }

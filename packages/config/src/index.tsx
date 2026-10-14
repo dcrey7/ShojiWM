@@ -56,6 +56,7 @@ import {
   WINDOW_STATE_WORKSPACE_OPACITY,
 } from "./window-manager";
 import { ISLAND_GLASS } from "./effect/island-glass";
+import { animationRunning } from "./animation-activity";
 import { createCoverflow } from "./coverflow";
 import { createFlip3D } from "./flip-3d";
 import { broadcastSwitcherLabel } from "./switcher-label";
@@ -224,6 +225,13 @@ const SWITCHERS = {
       WINDOW_VIEW.selectedWindowId(),
   ),
 };
+
+// No glass while a switcher is open, or while a window animates (Magic
+// Lamp, wobbly drag): redoing the blur on every frame of an animation
+// drops frames when another program keeps the GPU busy.
+const GLASS_PAUSED = computed(
+  () => SWITCHERS.blurSuspended() || animationRunning(),
+);
 
 // Window backdrop effects end with this stage so they can fade back in after
 // the switcher closes.
@@ -958,7 +966,7 @@ const BACKGROUND_BLUR = compileEffect({
   pipeline: [dualKawaseBlur({ radius: 4, passes: 2 }), backdropFade()],
 });
 COMPOSITOR.effect.background_effect = computed(() =>
-  SWITCHERS.blurSuspended() ? null : BACKGROUND_BLUR,
+  GLASS_PAUSED() ? null : BACKGROUND_BLUR,
 );
 
 const LAYER_BLUR_MASK = compileLayerEffect({
@@ -1483,7 +1491,7 @@ COMPOSITOR.window.composition = (window: WaylandWindow) => {
   });
   // No backdrop effects while the window switcher shows the windows as
   // textures: there is nothing under a window there to blur.
-  const blurSuspended = SWITCHERS.blurSuspended();
+  const blurSuspended = GLASS_PAUSED();
 
   const appIcon = (
     <AppIcon icon={window.icon} style={{ width: 16, height: 16 }} />
