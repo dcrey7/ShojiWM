@@ -326,6 +326,14 @@ interface HybridWindowManagerSnapshot {
   currentMonitor: string;
   activeWorkspaceByMonitor: [string, number][];
   workspaces: WorkspaceSnapshot[];
+  /** Missing in older snapshots. */
+  tiledMaximize?: [string, TiledMaximizeRecord][];
+}
+
+/** A tiled maximize: the page's layout before, and the windows sent away. */
+interface TiledMaximizeRecord {
+  tree: TileTree;
+  otherIds: string[];
 }
 
 interface WorkspaceSnapshot {
@@ -847,6 +855,13 @@ export class HybridWindowManager {
   private readonly overflowOpenAtMs = new Map<string, number>();
 
   /**
+   * Tiled maximize, by maximized window: the page's layout before, and the
+   * windows that went to the next workspace. Part of the saved state, so a
+   * config reload during a maximize still brings them back.
+   */
+  private readonly tiledMaximizeById = new Map<string, TiledMaximizeRecord>();
+
+  /**
    * When each window was last restored from minimized, by wall clock.
    *
    * sfwbar's taskbar click sends `unset_minimized` and `activate` as separate
@@ -893,7 +908,7 @@ export class HybridWindowManager {
       !restoringWorkspace &&
       workspace.mode === "tiled" &&
       workspace.shouldTile(window) &&
-      !workspace.canTileNewWindow()
+      !this.canTakeNewTile(workspace)
     ) {
       overflowWorkspace = this.insertEmptyWorkspaceAfter(
         workspace.monitor,
@@ -1032,6 +1047,7 @@ export class HybridWindowManager {
       workspaces: Array.from(this.workspaces.values()).map((workspace) =>
         workspace.snapshot(),
       ),
+      tiledMaximize: Array.from(this.tiledMaximizeById.entries()),
     };
     hotReloadDebug("hybrid-snapshot", {
       currentMonitor: snapshot.currentMonitor,
@@ -1071,6 +1087,10 @@ export class HybridWindowManager {
         workspaceSnapshot.index,
       );
       workspace.restore(workspaceSnapshot);
+    }
+    this.tiledMaximizeById.clear();
+    for (const [windowId, record] of snapshot.tiledMaximize ?? []) {
+      this.tiledMaximizeById.set(windowId, record);
     }
     this.compactWorkspaces();
   }
@@ -1151,6 +1171,13 @@ export class HybridWindowManager {
     this.pendingInitialFocusByWindowId.delete(window.id);
     this.untrackWindowTileability(window.id);
     this.windowStack.remove(window);
+    // A maximized tile closes: the windows it sent away come back first.
+    const maximize = this.tiledMaximizeById.get(window.id);
+    this.tiledMaximizeById.delete(window.id);
+    const maximizeWorkspace = maximize ? this.findWorkspaceForWindow(window) : undefined;
+    if (maximize && maximizeWorkspace) {
+      this.bringBackFromMaximize(maximize, maximizeWorkspace);
+    }
     for (const workspace of this.workspaces.values()) {
       if (workspace.removeWindow(window) !== undefined) {
         workspace.applyLayout();
@@ -1497,6 +1524,15 @@ export class HybridWindowManager {
     const window = event.window;
     window.state[WINDOW_STATE_MINIMIZED].set(false);
     this.clearWindowSnapState(window);
+
+    if (workspace?.mode === "tiled" && workspace.shouldTile(window)) {
+      if (event.maximized) {
+        this.maximizeTiled(workspace, window);
+      } else {
+        this.restoreTiled(workspace, window);
+      }
+      return;
+    }
 
     if (workspace?.isTiled && workspace.shouldTile(window)) {
       if (!event.maximized) {
@@ -2137,7 +2173,7 @@ export class HybridWindowManager {
       if (
         targetWorkspace.mode === "tiled" &&
         fromWorkspace.shouldTile(window) &&
-        !targetWorkspace.canTileNewWindow()
+        !this.canTakeNewTile(targetWorkspace)
       ) {
         targetWorkspace = this.insertEmptyWorkspaceAfter(
           fromWorkspace.monitor,
@@ -2198,6 +2234,114 @@ export class HybridWindowManager {
         return;
       }
     }
+  }
+
+  /**
+   * A new tile fits on `workspace`: the page has room, and no maximized
+   * window holds it for itself (that page is full too).
+   */
+  private canTakeNewTile(workspace: Workspace): boolean {
+    const held = workspace
+      .tiledWindows()
+      .some((window) => this.tiledMaximizeById.has(window.id));
+    return !held && workspace.canTileNewWindow();
+  }
+
+  /**
+   * Tiled mode, maximize: the window keeps its page for itself. The other
+   * windows of the page slide out to a new workspace right after it, where
+   * they share the space evenly. Nothing gets covered.
+   */
+  private maximizeTiled(workspace: Workspace, window: WaylandWindow) {
+    window.state[WINDOW_STATE_RESTORE_RECT].set(null);
+    window.state[WINDOW_STATE_MAXIMIZED].set(true);
+    const tree = workspace.tiledLayoutTree();
+    const others = workspace
+      .tiledWindows()
+      .filter((other) => other.id !== window.id);
+    if (others.length > 0 && !this.tiledMaximizeById.has(window.id)) {
+      const side = this.insertEmptyWorkspaceAfter(workspace.monitor, workspace.index);
+      for (const other of others) {
+        const moved = workspace.takeWindowForMove(other);
+        if (moved) {
+          side.addMovedWindow(other, moved.snapshot);
+        }
+      }
+      // They slide out to the right, where their workspace now is.
+      side.slideWindows(
+        others,
+        0,
+        this.workspaceTransitionDistance(workspace.monitor),
+        1,
+        WORKSPACE_SLIDE_MIN_OPACITY,
+        WORKSPACE_SWITCH_ANIMATION_DURATION,
+      );
+      setTimeout(() => side.setVisible(side.isActive()), WORKSPACE_SWITCH_ANIMATION_DURATION);
+      this.tiledMaximizeById.set(window.id, {
+        tree,
+        otherIds: others.map((other) => other.id),
+      });
+    }
+    workspace.setTiledLayoutTree({ kind: "leaf", id: window.id });
+    workspace.applyLayout();
+    this.applyWorkspaceStackPolicy(workspace);
+    window.focus();
+    this.workspaceChangeBroadcaster?.();
+  }
+
+  /**
+   * Tiled mode, restore: the windows that left at maximize come back from
+   * their workspace and the page gets its old layout. The extra workspace,
+   * now empty, goes away.
+   */
+  private restoreTiled(workspace: Workspace, window: WaylandWindow) {
+    window.state[WINDOW_STATE_RESTORE_RECT].set(null);
+    window.state[WINDOW_STATE_MAXIMIZED].set(false);
+    const record = this.tiledMaximizeById.get(window.id);
+    this.tiledMaximizeById.delete(window.id);
+    if (record) {
+      this.bringBackFromMaximize(record, workspace);
+    }
+    workspace.applyLayout();
+    this.applyWorkspaceStackPolicy(workspace);
+    window.focus();
+    this.compactWorkspaces();
+    this.workspaceChangeBroadcaster?.();
+  }
+
+  /**
+   * Move the windows of a tiled maximize back, in their old layout. Each
+   * one comes from wherever it is now; a closed one is skipped.
+   */
+  private bringBackFromMaximize(record: TiledMaximizeRecord, workspace: Workspace) {
+    const back: WaylandWindow[] = [];
+    const sources = new Set<Workspace>();
+    for (const id of record.otherIds) {
+      const other = this.findWindowById(id);
+      const from = other ? this.findWorkspaceForWindow(other) : undefined;
+      if (!other || !from || from === workspace) {
+        continue;
+      }
+      const moved = from.takeWindowForMove(other);
+      if (moved) {
+        workspace.addMovedWindow(other, moved.snapshot);
+        back.push(other);
+        sources.add(from);
+      }
+    }
+    workspace.setTiledLayoutTree(record.tree);
+    for (const source of sources) {
+      source.applyLayout({ animate: false });
+    }
+    // They slide in from the right, where they were.
+    workspace.slideWindows(
+      back,
+      this.workspaceTransitionDistance(workspace.monitor),
+      0,
+      WORKSPACE_SLIDE_MIN_OPACITY,
+      1,
+      WORKSPACE_SWITCH_ANIMATION_DURATION,
+    );
   }
 
   public toggleFocusedWindowMaximize() {
@@ -4795,6 +4939,60 @@ export class Workspace {
     }, TILE_ANIMATION_DURATION);
   }
 
+  /** Tiled mode: the tiles of this workspace, in their order. */
+  public tiledWindows(): WaylandWindow[] {
+    return this.tileableWindows();
+  }
+
+  /** Tiled mode: the layout, up to date with the windows. */
+  public tiledLayoutTree(): TileTree {
+    this.syncTree();
+    return this.tree;
+  }
+
+  /**
+   * Tiled mode: put back a layout saved earlier. Windows of it that are
+   * gone lose their cell; windows not in it get one with the usual rules.
+   */
+  public setTiledLayoutTree(tree: TileTree) {
+    const here = new Set(this.tileableWindows().map((window) => window.id));
+    let next = tree;
+    for (const id of leafIds(tree)) {
+      if (!here.has(id)) {
+        next = removeTile(next, id);
+      }
+    }
+    this.tree = next;
+    this.soloShare = 1;
+    this.syncTree();
+  }
+
+  /**
+   * Slide some windows of this workspace sideways, like a workspace slide.
+   * Used when windows move between workspaces without a view switch.
+   */
+  public slideWindows(
+    windows: WaylandWindow[],
+    fromOffsetX: number,
+    toOffsetX: number,
+    fromOpacity: number,
+    toOpacity: number,
+    duration: number,
+  ) {
+    for (const window of windows) {
+      scheduleWorkspaceVisualAnimation(
+        window,
+        fromOffsetX,
+        toOffsetX,
+        fromOpacity,
+        toOpacity,
+        WINDOW_MANAGEMENT_EASING,
+        duration,
+      );
+      window.state[WINDOW_STATE_WORKSPACE_VISIBLE].set(true);
+    }
+  }
+
   public takeWindowForMove(
     window: WaylandWindow,
   ): { window: WaylandWindow; snapshot: WorkspaceWindowSnapshot } | null {
@@ -5340,8 +5538,9 @@ export class Workspace {
 
   /**
    * Tiled mode: each window gets its cell of the split tree. A maximized
-   * window covers the maximized rect of the screen (over the other tiles)
-   * until it is restored. A fullscreen window covers the whole monitor.
+   * window is alone on its page (the others moved to the next workspace),
+   * so its cell is the whole page. A fullscreen window covers the whole
+   * monitor.
    */
   private treePlacements(
     tileable: WaylandWindow[],
@@ -5356,9 +5555,7 @@ export class Workspace {
     return tileable.map((window) => {
       const rect = window.state[WINDOW_STATE_FULLSCREEN]()
         ? this.fullscreenRootRect(window)
-        : window.state[WINDOW_STATE_MAXIMIZED]()
-          ? this.maximizedRootRect(window)
-          : this.fitTileInCell(window, cells.get(window.id) ?? area);
+        : this.fitTileInCell(window, cells.get(window.id) ?? area);
       return { window, rect };
     });
   }
