@@ -828,16 +828,14 @@ function toggleLauncher() {
 // `pidof` stops a second lock screen from starting on top of the first.
 const LOCK_COMMAND = "pidof hyprlock || hyprlock";
 
-// Auto-lock: lock after 10 minutes away, and before the PC goes to sleep.
-// `loginctl lock-session` (and the KDE "Lock" button) also land here.
+// Lock before the PC goes to sleep. No idle timeout: the screen never
+// locks or sleeps by itself. `loginctl lock-session` (and the KDE "Lock"
+// button) also land here.
 if (!INSIDE_KDE) {
   COMPOSITOR.process.service("auto-lock", {
     command: [
       "swayidle",
       "-w",
-      "timeout",
-      "600",
-      LOCK_COMMAND,
       "before-sleep",
       LOCK_COMMAND,
       "lock",
