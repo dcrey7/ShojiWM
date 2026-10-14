@@ -177,14 +177,17 @@ export const WINDOW_STATE_SNAP_MONITOR = createWindowState<string | null>(
 const OPEN_CLOSE_ANIMATION_DURATION = seconds(0.5);
 
 /**
- * Dialogs that another program shows for an app: they always float, also on
- * a tiled workspace. The app is not their parent, so `isTransient` is false.
- * Example: Chrome's upload dialog comes from the file chooser portal.
+ * Windows that always float, also on a tiled workspace:
+ * - dialogs that another program shows for an app. The app is not their
+ *   parent, so `isTransient` is false. Example: Chrome's upload dialog
+ *   comes from the file chooser portal.
+ * - small pickers, like the emoji picker (Super+Period).
  */
 const ALWAYS_FLOAT_APP_IDS = new Set([
   "org.freedesktop.impl.portal.desktop.kde",
   "xdg-desktop-portal-gtk",
   "org.kde.kdialog",
+  "org.kde.plasma.emojier",
 ]);
 
 /** The window can be a tile: resizable, not a child window, not a dialog. */

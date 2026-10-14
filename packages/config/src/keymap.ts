@@ -215,6 +215,7 @@ export function createKeymap(deps: KeymapDeps): KeyEntry[] {
       binds: [{ keys: "Super+V", action: spawn("qdbus6 org.kde.klipper /klipper showKlipperPopupMenu") }],
     },
     { id: "settings", group: "Apps", description: "System Settings", binds: [{ keys: "Super+I", action: spawn("systemsettings") }] },
+    { id: "emoji", group: "Apps", description: "Emoji picker", binds: [{ keys: "Super+Period", action: spawn("plasma-emojier") }] },
 
     // Windows
     { id: "close", group: "Windows", description: "Close the window", binds: [{ keys: "Super+Q", action: () => wm.closeFocusedWindow() }] },
@@ -395,24 +396,6 @@ export function createKeymap(deps: KeymapDeps): KeyEntry[] {
           action: byMode(
             changesLayout(() => wm.toggleStackFocusedTile()),
             changesLayout(() => wm.stackFocusedIntoLeftColumn()),
-            nothing,
-          ),
-        },
-      ],
-    },
-    {
-      id: "unstack",
-      group: "Scrolling",
-      label: "Super+Period",
-      description: "",
-      tiled: "Same as Super+Comma (stack on / off)",
-      scrolling: "Take the tile out of its stack",
-      binds: [
-        {
-          keys: "Super+Period",
-          action: byMode(
-            changesLayout(() => wm.toggleStackFocusedTile()),
-            changesLayout(() => wm.unstackFocusedWindow()),
             nothing,
           ),
         },
