@@ -77,7 +77,7 @@ import {
  */
 export const SWITCHER_DIM_ALPHA = 0.45;
 /** Opening and closing, in ms. */
-export const TRANSITION_MS = 450;
+export const TRANSITION_MS = 300;
 /** The blur fading back in after closing, in ms. */
 const BLUR_FADE_MS = 350;
 /** Room around each window's texture for its shadow (logical px). */

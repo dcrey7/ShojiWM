@@ -31,7 +31,6 @@ import {
   type WindowSwitcher,
   type WindowSwitcherOptions,
   SWITCHER_DIM_ALPHA,
-  TRANSITION_MS,
 } from "./window-switcher";
 
 // The extension's defaults (schemas/org.gnome.shell.extensions.coverflowalttab.gschema.xml).
@@ -70,11 +69,11 @@ const SCREEN_MARGIN = 48;
  */
 const SWAP_AT = 0.5;
 /**
- * start-with-next, made visible: the switcher opens on the current window
- * (it zooms out into the middle card), then steps to the next one this long
- * after opening, near the end of the opening animation.
+ * start-with-next: the switcher steps to the next window at once, so the
+ * zoom-out and the step to the next window run together and Alt+Tab lands
+ * on the next window fast.
  */
-const INTRO_STEP_AT_MS = TRANSITION_MS * 0.8;
+const INTRO_STEP_AT_MS = 0;
 /** Touchpad scrolling / swiping distance per window (logical px). */
 const SCROLL_STEP_PX = 80;
 const SWIPE_STEP_PX = 140;
