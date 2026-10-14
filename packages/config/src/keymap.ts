@@ -402,10 +402,26 @@ export function createKeymap(deps: KeymapDeps): KeyEntry[] {
       // Super+Shift+R reloads the config (built into the compositor), so the
       // reverse cycle takes Ctrl.
       label: "Super+R / Super+Ctrl+R",
-      description: "Column width: 1/3, 1/2, 2/3, full (Ctrl: back)",
+      description: "",
+      tiled: "The window's side takes 1/3, 1/2, 2/3 of the width; the other side gets the rest (Ctrl: back)",
+      scrolling: "Column width: 1/3, 1/2, 2/3, full (Ctrl: back)",
       binds: [
-        { keys: "Super+R", action: changesLayout(() => wm.cycleFocusedColumnWidth(1)) },
-        { keys: "Super+Ctrl+R", action: changesLayout(() => wm.cycleFocusedColumnWidth(-1)) },
+        {
+          keys: "Super+R",
+          action: byMode(
+            changesLayout(() => wm.cycleFocusedSplitShare(1)),
+            changesLayout(() => wm.cycleFocusedColumnWidth(1)),
+            nothing,
+          ),
+        },
+        {
+          keys: "Super+Ctrl+R",
+          action: byMode(
+            changesLayout(() => wm.cycleFocusedSplitShare(-1)),
+            changesLayout(() => wm.cycleFocusedColumnWidth(-1)),
+            nothing,
+          ),
+        },
       ],
     },
     {

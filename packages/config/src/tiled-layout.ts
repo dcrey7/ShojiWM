@@ -344,6 +344,98 @@ function updateParentSplit(
   };
 }
 
+/** The widths Super+R steps through, as a share of a side-by-side split. */
+export const TILED_WIDTH_SHARES = [1 / 3, 1 / 2, 2 / 3];
+
+/**
+ * Super+R: give the side that holds `id` the next width share. The split is
+ * the nearest side-by-side split above `id`, so in a stack the whole stack
+ * gets wider or narrower. `step` 1 goes to the next bigger share and wraps
+ * from 2/3 to 1/3; `step` -1 goes the other way. The other side gets the
+ * rest of the width. A share that would put a window under the minimum size
+ * is skipped. The same tree comes back when nothing changes.
+ */
+export function cycleWidthShare(
+  tree: TileTree,
+  id: string,
+  step: 1 | -1,
+  area: TileRect,
+  gap: number,
+  limits: TileLimits = DEFAULT_TILE_LIMITS,
+): TileTree {
+  if (!tree || !hasLeaf(tree, id)) {
+    return tree;
+  }
+  // Returns the new node, or null when no side-by-side split is below `node`.
+  const visit = (node: TileNode, rect: TileRect): TileNode | null => {
+    if (node.kind === "leaf") {
+      return null;
+    }
+    const [firstRect, secondRect] = splitRect(rect, node.direction, node.ratio, gap);
+    const inFirst = hasLeaf(node.first, id);
+    // The nearest split wins, so look deeper first.
+    const deeper = inFirst
+      ? visit(node.first, firstRect)
+      : visit(node.second, secondRect);
+    if (deeper) {
+      return inFirst ? { ...node, first: deeper } : { ...node, second: deeper };
+    }
+    if (node.direction !== "row") {
+      return null;
+    }
+    const available = rect.width - gap;
+    if (available <= 0) {
+      return node;
+    }
+    const low = Math.max(
+      TILED_MIN_RATIO,
+      minSize(node.first, "width", gap, limits) / available,
+    );
+    const high = Math.min(
+      1 - TILED_MIN_RATIO,
+      1 - minSize(node.second, "width", gap, limits) / available,
+    );
+    const share = inFirst ? node.ratio : 1 - node.ratio;
+    const next = nextShare(share, step, (candidate) => {
+      const ratio = inFirst ? candidate : 1 - candidate;
+      return ratio >= low - 1e-9 && ratio <= high + 1e-9;
+    });
+    if (next === null) {
+      return node;
+    }
+    return { ...node, ratio: inFirst ? next : 1 - next };
+  };
+  const next = visit(tree, area);
+  return next ?? tree;
+}
+
+/**
+ * The share after `share` in TILED_WIDTH_SHARES, going up (`step` 1) or
+ * down (-1) and wrapping around, that `fits`. Null when none fits.
+ */
+function nextShare(
+  share: number,
+  step: 1 | -1,
+  fits: (candidate: number) => boolean,
+): number | null {
+  const same = (a: number, b: number) => Math.abs(a - b) < 0.01;
+  const ascending = [...TILED_WIDTH_SHARES];
+  const ahead =
+    step === 1
+      ? ascending.filter((s) => s > share && !same(s, share))
+      : ascending.filter((s) => s < share && !same(s, share)).reverse();
+  const behind =
+    step === 1
+      ? ascending.filter((s) => s <= share || same(s, share))
+      : ascending.filter((s) => s >= share || same(s, share)).reverse();
+  for (const candidate of [...ahead, ...behind]) {
+    if (!same(candidate, share) && fits(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
 /** Flip the split that holds `id`: side by side <-> top and bottom. */
 export function flip(tree: TileTree, id: string): TileTree {
   if (!tree) {

@@ -33,6 +33,7 @@ import {
   flip as flipTile,
   hasLeaf,
   insert as insertTile,
+  cycleWidthShare,
   layout as tileLayout,
   leafIds,
   neighbour as tileNeighbour,
@@ -313,7 +314,7 @@ interface WorkspaceSnapshot {
   monitor: string;
   index: number;
   isTiled: boolean;
-  /** Missing in snapshots from before the tiled mode: then isTiled decides. */
+  /** Missing in snapshots from before the tiled mode: then isTiled decides (true: tiled). */
   mode?: WorkspaceMode;
   lastTilingMode?: TilingMode;
   activeWindowId: string | null;
@@ -1949,6 +1950,11 @@ export class HybridWindowManager {
   /** Tiled mode, Super+Minus / Super+Equal: move the focused window's divider. */
   public resizeFocusedSplit(delta: number) {
     this.runOnTiledLayout((workspace) => workspace.resizeFocusedSplit(delta));
+  }
+
+  /** Tiled mode, Super+R / Super+Ctrl+R: the focused side takes 1/3, 1/2 or 2/3. */
+  public cycleFocusedSplitShare(step: 1 | -1) {
+    this.runOnTiledLayout((workspace) => workspace.cycleFocusedSplitShare(step));
   }
 
   /**
@@ -5379,6 +5385,36 @@ export class Workspace {
     return true;
   }
 
+  /**
+   * Super+R: the focused window's side of the nearest side-by-side split
+   * takes the next width share (1/3, 1/2, 2/3). The other side gets the rest,
+   * so every window stays on this workspace.
+   */
+  public cycleFocusedSplitShare(step: 1 | -1): boolean {
+    if (this.mode !== "tiled") {
+      return false;
+    }
+    this.syncTree();
+    const id = this.tiledAnchorId();
+    const window = id ? this.findWindowById(id) : undefined;
+    if (!id || !window) {
+      return false;
+    }
+    const next = cycleWidthShare(
+      this.tree,
+      id,
+      step,
+      this.tiledArea(),
+      TILE_GAP,
+    );
+    if (next === this.tree) {
+      return false;
+    }
+    this.tree = next;
+    this.commitTreeChange(window);
+    return true;
+  }
+
   /** Lay out after a tree change and keep the focus on `window`. */
   private commitTreeChange(window: WaylandWindow) {
     this.activeWindowId = window.id;
@@ -6146,9 +6182,9 @@ export class Workspace {
   }
 
   public restore(snapshot: WorkspaceSnapshot) {
-    // A snapshot from before the tiled mode only has isTiled: its tiles
-    // scrolled. The tree is not in the snapshot; it is built again.
-    this.mode = snapshot.mode ?? (snapshot.isTiled ? "scrolling" : "floating");
+    // A snapshot from before the tiled mode only has isTiled: it opens
+    // tiled. The tree is not in the snapshot; it is built again.
+    this.mode = snapshot.mode ?? (snapshot.isTiled ? "tiled" : "floating");
     this.lastTilingMode =
       snapshot.lastTilingMode ??
       (this.mode === "floating" ? "tiled" : this.mode);

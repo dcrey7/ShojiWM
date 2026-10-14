@@ -4,6 +4,7 @@ import {
   buildTree,
   canInsert,
   chooseLeafToSplit,
+  cycleWidthShare,
   flip,
   insert,
   layout,
@@ -188,4 +189,48 @@ test("swap trades the places of two windows", () => {
   assert.deepEqual(rects(swapped)[3], [0, 0, 1274, 714]);
   assert.deepEqual(rects(swapped)[1], [1286, 726, 1274, 714]);
   assert.deepEqual(leafIds(swapped), ["3", "4", "2", "1"]);
+});
+
+test("cycleWidthShare: Super+R steps the stack through 1/3, 1/2, 2/3", () => {
+  // 1 on the left, 2 and 3 stacked on the right. Each side has 1/2.
+  const three = open(WIDE, 3);
+  const width = (tree: TileTree, id: string) => rects(tree)[Number(id)][2];
+  const available = WIDE.width - GAP;
+  const near = (got: number, share: number) =>
+    assert.ok(Math.abs(got - available * share) < 1, `${got} vs ${share}`);
+
+  const up1 = cycleWidthShare(three, "2", 1, WIDE, GAP);
+  near(width(up1, "2"), 2 / 3);
+  near(width(up1, "3"), 2 / 3);
+  near(width(up1, "1"), 1 / 3);
+
+  // From 2/3 it wraps to 1/3. Window 1 stays on the page with the rest.
+  const up2 = cycleWidthShare(up1, "2", 1, WIDE, GAP);
+  near(width(up2, "2"), 1 / 3);
+  near(width(up2, "1"), 2 / 3);
+
+  const up3 = cycleWidthShare(up2, "3", 1, WIDE, GAP);
+  near(width(up3, "2"), 1 / 2);
+  near(width(up3, "1"), 1 / 2);
+
+  // Super+Ctrl+R goes the other way.
+  const down = cycleWidthShare(three, "1", -1, WIDE, GAP);
+  near(width(down, "1"), 1 / 3);
+  near(width(down, "2"), 2 / 3);
+
+  // Every window stays inside the screen.
+  for (const tree of [up1, up2, up3, down]) {
+    for (const [x, , w] of Object.values(rects(tree))) {
+      assert.ok(x >= 0 && x + w <= WIDE.width + 0.5);
+    }
+  }
+});
+
+test("cycleWidthShare skips shares under the min size", () => {
+  // 1366 wide: 1/3 is 451 px, under 600, so no share fits.
+  const two = open(SMALL, 2);
+  assert.equal(cycleWidthShare(two, "1", 1, SMALL, GAP), two);
+  // Portrait: no side-by-side split at all.
+  const rows = open(PORTRAIT, 2);
+  assert.equal(cycleWidthShare(rows, "1", 1, PORTRAIT, GAP), rows);
 });
