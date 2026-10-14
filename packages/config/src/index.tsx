@@ -1329,6 +1329,8 @@ const PLASMA_Z_INDEX: Record<PlasmaSurfaceRole, number> = {
 // close copy: Breeze's popup corner radius and a dark, wide, soft shadow.
 // The panel and the desktop get none, as in KWin.
 const PLASMA_POPUP_RADIUS = 8;
+/** Behind see-through windows while the glass blur is off (opaque). */
+const WINDOW_SOLID_BACKDROP = "#1b1e24";
 const PLASMA_POPUP_SHADOW = [{ y: 6, blur: 28, spread: 0, color: "#000000a0" }];
 
 /** A plasmashell window: the client surface where plasmashell asked. */
@@ -1440,8 +1442,17 @@ COMPOSITOR.window.composition = (window: WaylandWindow) => {
           ? [{ y: 10, blur: 32, spread: -2, color: "#00000090" }]
           : [{ y: 4, blur: 16, spread: -2, color: "#00000060" }],
   );
-  const titlebarBackground = window.isFocused((focused) =>
-    focused ? "#1f243080" : "#2a2f3a80",
+  // With the glass blur on, the title bar is see-through glass. With it off
+  // (an animation runs, a switcher is open, or the GPU is too busy), a
+  // see-through bar would show sharp text from behind, so it turns solid.
+  const titlebarBackground = computed(() =>
+    GLASS_PAUSED()
+      ? window.isFocused()
+        ? "#1f2430f2"
+        : "#2a2f3af2"
+      : window.isFocused()
+        ? "#1f243080"
+        : "#2a2f3a80",
   );
   const titleColor = window.isFocused((focused) =>
     focused ? "#f5f7fa" : "#c9d1d9",
@@ -1526,8 +1537,15 @@ COMPOSITOR.window.composition = (window: WaylandWindow) => {
   const titlebarContent = trafficLightsShown(window)
     ? [appIcon, label, minimizeButton, maximizeButton, closeButton]
     : [appIcon, label];
+  // Apps like Konsole and Dolphin draw a see-through background and ask for
+  // blur behind it. Without the blur, a flat dark backdrop goes behind them
+  // instead, so the text behind the window never shows through. One flat
+  // fill: no GPU cost to speak of.
   var innerComponents = (
-    <Box direction="column">
+    <Box
+      direction="column"
+      style={blurSuspended ? { background: WINDOW_SOLID_BACKDROP } : {}}
+    >
       {blurSuspended ? (
         <Box direction="row" style={titlebarStyle}>
           {titlebarContent}
