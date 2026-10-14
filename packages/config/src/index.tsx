@@ -366,17 +366,11 @@ COMPOSITOR.workspace.configure(() => {
 });
 
 /**
- * KDE's virtual desktops for plasmashell's Pager: workspaces 1 to N of the
- * current monitor, N being the highest one in use or shown. Desktop N is
- * workspace N, so the Pager's numbers match Super+N; empty workspaces in
- * between show as empty desktops.
+ * KDE's virtual desktops for the bar's workspace pills: workspaces 1 to N
+ * of the current monitor. Workspaces are dynamic (no gaps, empty ones go
+ * away), so N is the number of workspaces and desktop N is workspace N.
  */
-/**
- * The Pager always shows at least this many desktops. KDE's Pager hides
- * itself when there is only one desktop, so without a minimum it vanishes
- * whenever every window sits on workspace 1.
- */
-const MIN_PAGER_DESKTOPS = 4;
+const MIN_PAGER_DESKTOPS = 1;
 function virtualDesktops(view: ReturnType<typeof HYBRID_WINDOW_MANAGER.viewForIpc>) {
   const monitorName = HYBRID_WINDOW_MANAGER.getCurrentMonitorName();
   const monitor = view.monitors.find((candidate) => candidate.name === monitorName);

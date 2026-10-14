@@ -1056,6 +1056,7 @@ export class HybridWindowManager {
       );
       workspace.restore(workspaceSnapshot);
     }
+    this.compactWorkspaces();
   }
 
   public onFirstCommit(window: WaylandWindow) {
@@ -1138,6 +1139,10 @@ export class HybridWindowManager {
       if (workspace.removeWindow(window) !== undefined) {
         workspace.applyLayout();
       }
+    }
+    // The last window of a workspace you are not on: that workspace goes.
+    if (this.compactWorkspaces()) {
+      this.workspaceChangeBroadcaster?.();
     }
     this.syncWorkspaceVisibility();
     // `window.state[...]` (used for e.g. WINDOW_STATE_RECT, minimized, etc.)
@@ -2007,6 +2012,48 @@ export class HybridWindowManager {
   }
 
   /**
+   * Dynamic workspaces: drop every empty workspace that is not the active
+   * one, and number the rest 1, 2, 3... on each monitor, in their order.
+   * So there is one workspace at the start, a full page adds one, and a
+   * workspace you leave empty goes away. True when anything changed.
+   */
+  private compactWorkspaces(): boolean {
+    let changed = false;
+    const monitors = new Set(
+      Array.from(this.workspaces.values()).map((workspace) => workspace.monitor),
+    );
+    for (const monitor of monitors) {
+      const active = this.activeWorkspaceByMonitor.get(monitor) ?? 1;
+      const all = Array.from(this.workspaces.values())
+        .filter((workspace) => workspace.monitor === monitor)
+        .sort((a, b) => a.index - b.index);
+      const kept = all.filter(
+        (workspace) => !workspace.isEmpty() || workspace.index === active,
+      );
+      if (
+        kept.length === all.length &&
+        kept.every((workspace, position) => workspace.index === position + 1)
+      ) {
+        continue;
+      }
+      changed = true;
+      for (const workspace of all) {
+        this.workspaces.delete(workspaceKey(monitor, workspace.index));
+      }
+      let newActive = 1;
+      kept.forEach((workspace, position) => {
+        if (workspace.index === active) {
+          newActive = position + 1;
+        }
+        workspace.index = position + 1;
+        this.workspaces.set(workspaceKey(monitor, workspace.index), workspace);
+      });
+      this.activeWorkspaceByMonitor.set(monitor, newActive);
+    }
+    return changed;
+  }
+
+  /**
    * An empty tiled workspace right after workspace `index` of `monitor`.
    * An empty tiled workspace already there is used. Else the workspaces
    * after `index` move up by one to make room for a new one.
@@ -2269,6 +2316,7 @@ export class HybridWindowManager {
     }
     this.applyWorkspaceStackPolicy(fromWorkspace);
     this.applyWorkspaceStackPolicy(toWorkspace);
+    this.compactWorkspaces();
     this.workspaceChangeBroadcaster?.();
   }
 
@@ -2895,6 +2943,9 @@ export class HybridWindowManager {
       gesture.toWorkspace.focusActiveWindow();
       this.applyWorkspaceStackPolicy(gesture.fromWorkspace);
       this.applyWorkspaceStackPolicy(gesture.toWorkspace);
+      if (this.compactWorkspaces()) {
+        this.workspaceChangeBroadcaster?.();
+      }
       return;
     }
 
@@ -4359,6 +4410,11 @@ export class Workspace {
 
   public windowCount(): number {
     return this.windows.length;
+  }
+
+  /** No windows, and none waiting to come back after a config reload. */
+  public isEmpty(): boolean {
+    return this.windows.length === 0 && this.restoredWindowStateById.size === 0;
   }
 
   /**
