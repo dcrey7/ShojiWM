@@ -13,6 +13,7 @@ import {
   leafIds,
   neighbour,
   remove,
+  removeAndSettle,
   resize,
   resizeSoloShare,
   siblingLeaf,
@@ -330,4 +331,49 @@ test("resizeSoloShare stays between the min width and full", () => {
   assert.equal(resizeSoloShare(1, 0.05, WIDE), 1);
   assert.ok(Math.abs(resizeSoloShare(1, -0.05, WIDE) - 0.95) < 1e-9);
   assert.equal(resizeSoloShare(0.25, -0.05, WIDE), 600 / 2560);
+});
+
+test("a window that opens and closes gives back a 2/3 | 1/3 layout", () => {
+  const twoThirds: TileTree = {
+    kind: "split",
+    direction: "row",
+    ratio: 2 / 3,
+    first: { kind: "leaf", id: "1" },
+    second: { kind: "leaf", id: "2" },
+  };
+  const before = rects(twoThirds);
+  // The biggest window (1, the 2/3 one) is wider than tall: S goes beside it.
+  const opened = insert(twoThirds, "S", { area: WIDE, gap: GAP, focusedId: "2" });
+  const during = rects(opened);
+  assert.equal(during["1"][3], 1440);
+  assert.equal(during.S[3], 1440);
+  assert.equal(during["2"][2], before["2"][2]);
+  assert.deepEqual(rects(removeAndSettle(opened, "S", WIDE, GAP)), before);
+});
+
+test("a short-lived window keeps the 2/3 | 1/3 ratio for the next one", () => {
+  const twoThirds: TileTree = {
+    kind: "split",
+    direction: "row",
+    ratio: 2 / 3,
+    first: { kind: "leaf", id: "1" },
+    second: { kind: "leaf", id: "2" },
+  };
+  const blip = insert(twoThirds, "T", { area: WIDE, gap: GAP, focusedId: "2" });
+  const back = removeAndSettle(blip, "T", WIDE, GAP);
+  assert.deepEqual(rects(back), rects(twoThirds));
+});
+
+test("removing a window turns wide strips back into columns", () => {
+  // 1 | (2 over 3); 1 goes: 2 and 3 would be two wide strips.
+  const three = open(WIDE, 3);
+  assert.deepEqual(rects(removeAndSettle(three, "1", WIDE, GAP)), {
+    2: [0, 0, 1274, 1440],
+    3: [1286, 0, 1274, 1440],
+  });
+});
+
+test("removing the last window gives an empty tree", () => {
+  assert.equal(removeAndSettle(open(WIDE, 1), "1", WIDE, GAP), null);
+  assert.deepEqual(rects(removeAndSettle(open(WIDE, 2), "9", WIDE, GAP)), rects(open(WIDE, 2)));
 });

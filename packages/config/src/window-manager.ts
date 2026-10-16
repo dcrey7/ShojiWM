@@ -28,7 +28,6 @@ import type { ManagedWindowRect, WindowSizeConstraints } from "shoji_wm/types";
 import { playRectAnimation, stopRectAnimation } from "./window-animation";
 import { magicLampStart, magicLampStop } from "./magic-lamp";
 import {
-  buildTree,
   canInsert as canInsertTile,
   flip as flipTile,
   hasLeaf,
@@ -39,7 +38,7 @@ import {
   layout as tileLayout,
   leafIds,
   neighbour as tileNeighbour,
-  remove as removeTile,
+  removeAndSettle,
   resize as resizeTileSplit,
   resizeSoloShare,
   siblingLeaf,
@@ -860,6 +859,8 @@ export class HybridWindowManager {
    * config reload during a maximize still brings them back.
    */
   private readonly tiledMaximizeById = new Map<string, TiledMaximizeRecord>();
+  /** Super+R left "full": the share step to apply once the others are back. */
+  private readonly shareAfterRestoreById = new Map<string, 1 | -1>();
 
   /**
    * When each window was last restored from minimized, by wall clock.
@@ -1174,6 +1175,7 @@ export class HybridWindowManager {
     // A maximized tile closes: the windows it sent away come back first.
     const maximize = this.tiledMaximizeById.get(window.id);
     this.tiledMaximizeById.delete(window.id);
+    this.shareAfterRestoreById.delete(window.id);
     const maximizeWorkspace = maximize ? this.findWorkspaceForWindow(window) : undefined;
     if (maximize && maximizeWorkspace) {
       this.bringBackFromMaximize(maximize, maximizeWorkspace);
@@ -2070,9 +2072,34 @@ export class HybridWindowManager {
     this.runOnTiledLayout((workspace) => workspace.resizeFocusedSplit(delta));
   }
 
-  /** Tiled mode, Super+R / Super+Ctrl+R: the focused side takes 1/3, 1/2 or 2/3. */
+  /**
+   * Tiled mode, Super+R / Super+Ctrl+R: the focused side steps through
+   * 1/3 -> 1/2 -> 2/3 -> full -> 1/3. "Full" is the tiled maximize: the
+   * other windows move to the next workspace. The next press brings them
+   * back, and the window takes 1/3 (Ctrl: it keeps its 2/3).
+   */
   public cycleFocusedSplitShare(step: 1 | -1) {
-    this.runOnTiledLayout((workspace) => workspace.cycleFocusedSplitShare(step));
+    const workspace = this.getCurrentWorkspace();
+    const window = workspace?.mode === "tiled" ? workspace.tiledAnchorWindow() : undefined;
+    if (window && this.tiledMaximizeById.has(window.id)) {
+      this.shareAfterRestoreById.set(window.id, step);
+      window.unmaximize();
+      this.holdPointerFocus();
+      return;
+    }
+    let full: WaylandWindow | undefined;
+    this.runOnTiledLayout((current) => {
+      const result = current.cycleFocusedSplitShare(step);
+      if (result === "full") {
+        full = current.tiledAnchorWindow();
+      }
+      return result === "done";
+    });
+    if (full && read(full.isResizable)) {
+      // maximize() fires onWindowMaximizeRequest -> maximizeTiled.
+      full.maximize();
+      this.holdPointerFocus();
+    }
   }
 
   /**
@@ -2301,6 +2328,12 @@ export class HybridWindowManager {
     this.tiledMaximizeById.delete(window.id);
     if (record) {
       this.bringBackFromMaximize(record, workspace);
+    }
+    const shareStep = this.shareAfterRestoreById.get(window.id);
+    this.shareAfterRestoreById.delete(window.id);
+    if (shareStep === 1) {
+      // Super+R after "full" goes round to 1/3.
+      workspace.cycleFocusedSplitShare(1, true);
     }
     workspace.applyLayout();
     this.applyWorkspaceStackPolicy(workspace);
@@ -4467,7 +4500,7 @@ export class Workspace {
       const tileIndex = this.tileIndexOf(window.id);
       // Tiled mode: the window that takes the space also takes the focus.
       const treeSuccessorId = siblingLeaf(this.tree, window.id);
-      this.tree = this.rebuiltTree(removeTile(this.tree, window.id));
+      this.tree = removeAndSettle(this.tree, window.id, this.tiledArea(), TILE_GAP);
       this.forgetStacking(window, this.shouldTile(window));
       this.windows.splice(index, 1);
       this.tileWidthByWindowId.delete(window.id);
@@ -4959,7 +4992,7 @@ export class Workspace {
     let next = tree;
     for (const id of leafIds(tree)) {
       if (!here.has(id)) {
-        next = removeTile(next, id);
+        next = removeAndSettle(next, id, this.tiledArea(), TILE_GAP);
       }
     }
     this.tree = next;
@@ -5604,10 +5637,7 @@ export class Workspace {
       (id) => !tileIds.has(id) && !this.awaitedTreeIds.has(id),
     );
     for (const id of leaving) {
-      tree = removeTile(tree, id);
-    }
-    if (leaving.length > 0) {
-      tree = this.rebuiltTree(tree);
+      tree = removeAndSettle(tree, id, this.tiledArea(), TILE_GAP);
     }
     const missing = tileable.filter((window) => !hasLeaf(tree, window.id));
     const wasSolo = tree?.kind === "leaf";
@@ -5641,16 +5671,6 @@ export class Workspace {
       this.soloShare = 1;
     }
     this.tree = tree;
-  }
-
-  /**
-   * The tree after a window left, laid out again with the rules in the same
-   * window order. So the windows that stay always get the normal layout for
-   * their count (2 side by side, 3 as one big and two stacked), not the cut
-   * directions left over from before. Flips and divider moves are lost.
-   */
-  private rebuiltTree(tree: TileTree): TileTree {
-    return buildTree(leafIds(tree), this.tiledArea(), TILE_GAP);
   }
 
   /** The tile the tiled-mode keys act on: the focused one, else the active one. */
@@ -5867,36 +5887,48 @@ export class Workspace {
    * Super+R: the focused window's side of the nearest side-by-side split
    * takes the next width share (1/3, 1/2, 2/3). The other side gets the rest,
    * so every window stays on this workspace.
+   *
+   * After 2/3 comes "full" (Ctrl: before 1/3): the step would wrap round,
+   * so nothing changes here and the caller maximizes the window. With
+   * `allowWrap`, the wrap is applied instead (full -> 1/3).
    */
-  public cycleFocusedSplitShare(step: 1 | -1): boolean {
+  public cycleFocusedSplitShare(
+    step: 1 | -1,
+    allowWrap = false,
+  ): "done" | "none" | "full" {
     if (this.mode !== "tiled") {
-      return false;
+      return "none";
     }
     this.syncTree();
     const id = this.tiledAnchorId();
     const window = id ? this.findWindowById(id) : undefined;
     if (!id || !window) {
-      return false;
+      return "none";
     }
     if (this.tree?.kind === "leaf") {
-      return this.setSoloShare(
+      const changed = this.setSoloShare(
         window,
         cycleSoloShare(this.soloShare, step, this.tiledArea()),
       );
+      return changed ? "done" : "none";
     }
-    const next = cycleWidthShare(
-      this.tree,
-      id,
-      step,
-      this.tiledArea(),
-      TILE_GAP,
-    );
-    if (next === this.tree) {
-      return false;
+    const area = this.tiledArea();
+    const next = cycleWidthShare(this.tree, id, step, area, TILE_GAP);
+    const widthBefore = tileLayout(this.tree, area, TILE_GAP).get(id)?.width ?? 0;
+    const widthAfter = tileLayout(next, area, TILE_GAP).get(id)?.width ?? 0;
+    const wraps = step === 1 ? widthAfter < widthBefore : widthAfter > widthBefore;
+    if (next === this.tree || (wraps && !allowWrap)) {
+      return "full";
     }
     this.tree = next;
     this.commitTreeChange(window);
-    return true;
+    return "done";
+  }
+
+  /** The window the tiled-mode keys act on, if any. */
+  public tiledAnchorWindow(): WaylandWindow | undefined {
+    const id = this.tiledAnchorId();
+    return id ? this.findWindowById(id) : undefined;
   }
 
   /** A lone window takes `share` of the page width, on the left. */

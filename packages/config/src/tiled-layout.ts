@@ -299,6 +299,57 @@ export function remove(tree: TileTree, id: string): TileTree {
 }
 
 /**
+ * A window leaves: its sibling takes back the space, and every other split
+ * keeps its ratio. So opening and then closing a window gives back the
+ * layout from before. Only inside the sibling, a split that now cuts along
+ * the shorter side is turned (two wide strips become two columns).
+ */
+export function removeAndSettle(
+  tree: TileTree,
+  id: string,
+  area: TileRect,
+  gap: number,
+): TileTree {
+  if (!tree || !hasLeaf(tree, id)) {
+    return tree;
+  }
+  if (tree.kind === "leaf") {
+    return null;
+  }
+  const visit = (node: TileNode, rect: TileRect): TileNode => {
+    if (node.kind === "leaf") {
+      return node;
+    }
+    const [firstRect, secondRect] = splitRect(rect, node.direction, node.ratio, gap);
+    if (node.first.kind === "leaf" && node.first.id === id) {
+      return settle(node.second, rect, gap);
+    }
+    if (node.second.kind === "leaf" && node.second.id === id) {
+      return settle(node.first, rect, gap);
+    }
+    return hasLeaf(node.first, id)
+      ? { ...node, first: visit(node.first, firstRect) }
+      : { ...node, second: visit(node.second, secondRect) };
+  };
+  return visit(tree, area);
+}
+
+/** Turn every split of `node` that cuts its rect along the shorter side. */
+function settle(node: TileNode, rect: TileRect, gap: number): TileNode {
+  if (node.kind === "leaf") {
+    return node;
+  }
+  const direction: SplitDirection = rect.width >= rect.height ? "row" : "column";
+  const [firstRect, secondRect] = splitRect(rect, direction, node.ratio, gap);
+  return {
+    ...node,
+    direction,
+    first: settle(node.first, firstRect, gap),
+    second: settle(node.second, secondRect, gap),
+  };
+}
+
+/**
  * The window that takes the space when `id` goes away: the first window of
  * its sibling. Null when `id` is alone or not in the tree.
  */
