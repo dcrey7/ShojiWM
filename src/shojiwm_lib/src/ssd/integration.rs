@@ -750,6 +750,10 @@ fn log_animation_window_refresh_timing(
     );
 }
 
+/// The last part of a size animation, in ms, where the frozen picture of the
+/// client fades out over the live client.
+const RESIZE_FADE_MS: f64 = 150.0;
+
 #[derive(Debug, Clone)]
 pub struct WindowDecorationState {
     pub snapshot: WaylandWindowSnapshot,
@@ -793,6 +797,9 @@ pub struct WindowDecorationState {
     pub resize_frozen: bool,
     /// The renderer took the picture for the current `resize_frozen` run.
     pub resize_snapshot_taken: bool,
+    /// How much of the live client shows over the frozen picture: 0 for most
+    /// of a size animation, then up to 1 in its last `RESIZE_FADE_MS`.
+    pub resize_live_alpha: f32,
     /// The client size (width, height) most recently delivered via xdg /
     /// X11 configure. Tracked separately from `client_rect` because we want
     /// to keep the client configured at the animation's final target size for
@@ -2152,6 +2159,10 @@ impl ShojiWM {
         for (_, decoration) in self.window_decorations.iter_mut() {
             if decoration.snapshot.id == window_id {
                 decoration.managed_window_animation_active = active;
+                if !active {
+                    decoration.resize_frozen = false;
+                    decoration.resize_live_alpha = 1.0;
+                }
                 break;
             }
         }
@@ -2280,12 +2291,28 @@ impl ShojiWM {
             let mut next_managed_window = base_managed_window.clone();
             let mut rect_changed = false;
             let mut transform_changed = false;
+            // The time left in a running rect animation that changes the size.
+            let mut resize_remaining_ms: Option<f64> = None;
 
             for active in &channel_values {
                 let (progress, running) = managed_animation_progress(active, now_ms);
                 active_any |= running;
                 if !running {
                     completed_channels.push(active.animation.channel.clone());
+                }
+                if running
+                    && let Some(rect_animation) = &active.animation.rect
+                    && rect_animation.mode == ManagedWindowAnimationMode::Override
+                    && rect_animation.from.is_some_and(|from| {
+                        (from.width - rect_animation.to.width).abs() > 0.5
+                            || (from.height - rect_animation.to.height).abs() > 0.5
+                    })
+                {
+                    let remaining = (active.started_at_ms + rect_animation.duration as f64
+                        - now_ms)
+                        .max(0.0);
+                    resize_remaining_ms =
+                        Some(resize_remaining_ms.map_or(remaining, |other| other.max(remaining)));
                 }
 
                 if let Some(rect_animation) = &active.animation.rect {
@@ -2355,6 +2382,10 @@ impl ShojiWM {
                 let previous_transform = decoration.visual_transform;
                 decoration.managed_window = next_managed_window.clone();
                 decoration.managed_window_animation_active = animation_still_active;
+                decoration.resize_frozen = resize_remaining_ms.is_some();
+                decoration.resize_live_alpha = resize_remaining_ms.map_or(1.0, |remaining| {
+                    (1.0 - remaining / RESIZE_FADE_MS).clamp(0.0, 1.0) as f32
+                });
                 // Publish the static-seeded transform even when only rect channels remain;
                 // a cancelled opacity/offset channel must not leave its last sample behind.
                 decoration.visual_transform = next_managed_window.transform;
@@ -3279,6 +3310,7 @@ impl ShojiWM {
                             managed_window_animation_active,
                             resize_frozen: false,
                             resize_snapshot_taken: false,
+                            resize_live_alpha: 1.0,
                             last_configured_client_size,
                             static_visual_transform: static_transform,
                             static_managed_window: static_managed,
@@ -5121,15 +5153,6 @@ impl ShojiWM {
             else {
                 continue;
             };
-
-            // A rect animation that still changes the size: draw the frozen
-            // picture of the client meanwhile (see `resize_frozen`).
-            if let Some(decoration) = self.window_decorations.get_mut(&window) {
-                decoration.resize_frozen = rect_override_target_raw.is_some_and(|target| {
-                    (target.width - desired_root_raw.width).abs() > 0.5
-                        || (target.height - desired_root_raw.height).abs() > 0.5
-                });
-            }
 
             // The integer pipeline below may conclude "noop" while the
             // fractional origin remainder still moved (sub-logical-pixel

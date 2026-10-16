@@ -15187,6 +15187,7 @@ fn tty_window_stack_elements(
                     decoration.resize_frozen
                         && decoration.resize_snapshot_taken
                         && decoration.managed_window_animation_active
+                        && decoration.resize_live_alpha <= 0.0
                 })
                 .and_then(|decoration| {
                     live_window_snapshots
@@ -15771,6 +15772,43 @@ fn tty_window_stack_elements(
                         );
                     }
                 transformed
+            };
+            // The end of a size animation: the frozen picture fades out over
+            // the live client, so the switch has no hard jump.
+            let fading_picture = window_decorations
+                .get(window)
+                .filter(|decoration| {
+                    decoration.resize_frozen
+                        && decoration.resize_snapshot_taken
+                        && decoration.managed_window_animation_active
+                        && decoration.resize_live_alpha > 0.0
+                        && decoration.resize_live_alpha < 1.0
+                })
+                .and_then(|decoration| {
+                    live_window_snapshots.get(&decoration.snapshot.id).map(|snapshot| {
+                        let mut frozen = snapshot.clone();
+                        frozen.rect = decoration.client_rect;
+                        (frozen, decoration.resize_live_alpha)
+                    })
+                });
+            let client_elements = match fading_picture {
+                Some((frozen, live_alpha)) => {
+                    let mut elements = snapshot::live_snapshot_element(
+                        &*renderer,
+                        &frozen,
+                        output_geo,
+                        scale,
+                        visual_state.opacity * (1.0 - live_alpha),
+                    )
+                    .and_then(|element| {
+                        transform_snapshot_elements(vec![element], visual_state).ok()
+                    })
+                    .unwrap_or_default();
+                    // Front to back: the picture lies on top of the client.
+                    elements.extend(client_elements);
+                    elements
+                }
+                None => client_elements,
             };
             window_timing.client_phase_ms =
                 client_phase_started_at.elapsed().as_secs_f64() * 1000.0;
