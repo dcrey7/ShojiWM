@@ -334,6 +334,11 @@ interface HybridWindowManagerSnapshot {
 interface TiledMaximizeRecord {
   tree: TileTree;
   otherIds: string[];
+  /**
+   * The maximized window itself went to the next workspace (it was not on
+   * the left of its page); the others stayed home.
+   */
+  selfMoved?: boolean;
 }
 
 interface WorkspaceSnapshot {
@@ -1178,7 +1183,7 @@ export class HybridWindowManager {
     this.tiledMaximizeById.delete(window.id);
     this.shareAfterRestoreById.delete(window.id);
     const maximizeWorkspace = maximize ? this.findWorkspaceForWindow(window) : undefined;
-    if (maximize && maximizeWorkspace) {
+    if (maximize && maximizeWorkspace && !maximize.selfMoved) {
       this.bringBackFromMaximize(maximize, maximizeWorkspace);
     }
     for (const workspace of this.workspaces.values()) {
@@ -2289,6 +2294,14 @@ export class HybridWindowManager {
     const others = workspace
       .tiledWindows()
       .filter((other) => other.id !== window.id);
+    if (
+      others.length > 0 &&
+      !this.tiledMaximizeById.has(window.id) &&
+      !workspace.isLeftmostTile(window.id)
+    ) {
+      this.maximizeTiledToNextPage(workspace, window, tree, others);
+      return;
+    }
     if (others.length > 0 && !this.tiledMaximizeById.has(window.id)) {
       const side = this.insertEmptyWorkspaceAfter(workspace.monitor, workspace.index);
       for (const other of others) {
@@ -2320,16 +2333,60 @@ export class HybridWindowManager {
   }
 
   /**
+   * Tiled maximize of a window that is not on the left of its page: it goes
+   * right, to a new workspace after this one, and the view follows. The
+   * others stay and share this page.
+   */
+  private maximizeTiledToNextPage(
+    workspace: Workspace,
+    window: WaylandWindow,
+    tree: TileTree,
+    others: WaylandWindow[],
+  ) {
+    const side = this.insertEmptyWorkspaceAfter(workspace.monitor, workspace.index);
+    const moved = workspace.takeWindowForMove(window);
+    if (!moved) {
+      return;
+    }
+    side.addMovedWindow(window, moved.snapshot);
+    this.tiledMaximizeById.set(window.id, {
+      tree,
+      otherIds: others.map((other) => other.id),
+      selfMoved: true,
+    });
+    workspace.applyLayout();
+    side.setTiledLayoutTree({ kind: "leaf", id: window.id });
+    side.applyLayout();
+    this.applyWorkspaceStackPolicy(workspace);
+    this.applyWorkspaceStackPolicy(side);
+    this.switchWorkspaceTo(side.monitor, side.index);
+    window.focus();
+    this.workspaceChangeBroadcaster?.();
+  }
+
+  /**
    * Tiled mode, restore: the windows that left at maximize come back from
    * their workspace and the page gets its old layout. The extra workspace,
-   * now empty, goes away.
+   * now empty, goes away. A window that went right itself goes back home.
    */
   private restoreTiled(workspace: Workspace, window: WaylandWindow) {
     window.state[WINDOW_STATE_RESTORE_RECT].set(null);
     window.state[WINDOW_STATE_MAXIMIZED].set(false);
     const record = this.tiledMaximizeById.get(window.id);
     this.tiledMaximizeById.delete(window.id);
-    if (record) {
+    if (record?.selfMoved) {
+      const home = record.otherIds
+        .map((id) => this.findWindowById(id))
+        .map((other) => (other ? this.findWorkspaceForWindow(other) : undefined))
+        .find((found) => found !== undefined && found !== workspace);
+      const moved = home ? workspace.takeWindowForMove(window) : undefined;
+      if (home && moved) {
+        home.addMovedWindow(window, moved.snapshot);
+        home.setTiledLayoutTree(record.tree);
+        workspace = home;
+        this.switchWorkspaceTo(home.monitor, home.index);
+      }
+    } else if (record) {
       this.bringBackFromMaximize(record, workspace);
     }
     const shareStep = this.shareAfterRestoreById.get(window.id);
@@ -5926,6 +5983,13 @@ export class Workspace {
     this.tree = next;
     this.commitTreeChange(window);
     return "done";
+  }
+
+  /** Tiled mode: the window's tile touches the left edge of the page. */
+  public isLeftmostTile(id: string): boolean {
+    const area = this.tiledArea();
+    const rect = tileLayout(this.tree, area, TILE_GAP).get(id);
+    return !rect || rect.x <= area.x + 1;
   }
 
   /** The window the tiled-mode keys act on, if any. */
