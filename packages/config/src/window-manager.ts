@@ -209,12 +209,13 @@ export const WINDOW_MANAGEMENT_EASING = cubicBezier(0.1, 0.9, 0.2, 1.0);
 const WINDOW_OPEN_EASING = cubicBezier(0.1, 1.1, 0.1, 1.1);
 /** Offset between floating windows that would otherwise open on the same spot. */
 const FLOATING_CASCADE_STEP = 32;
-export const TILE_ANIMATION_DURATION = seconds(0.5);
+/** Tiles moving and resizing: short, so the in-between frames pass quickly. */
+export const TILE_ANIMATION_DURATION = seconds(0.3);
 /** Full on a right-hand tile: the wait before the view slides to its new page. */
 const MAXIMIZE_NEXT_PAGE_SLIDE_DELAY_MS = 250;
 // A workspace switch slides like the tile strip scrolls: same duration and
 // easing (WINDOW_MANAGEMENT_EASING) as a tile move.
-const WORKSPACE_SWITCH_ANIMATION_DURATION = TILE_ANIMATION_DURATION;
+const WORKSPACE_SWITCH_ANIMATION_DURATION = seconds(0.5);
 /**
  * A full tiled page sends a new window to a new workspace. That slide is
  * short and crisp; the window opens (Magic Lamp) only after it.
@@ -224,8 +225,11 @@ const WORKSPACE_OVERFLOW_SLIDE_DURATION = seconds(0.22);
 const RESTORED_TREE_WAIT_MS = 3000;
 /** How far the mouse must move to take the focus back after a focus key. */
 const KEYBOARD_FOCUS_POINTER_SLOP_PX = 24;
-/** A sliding workspace fades only down to this opacity (a light fade). */
-const WORKSPACE_SLIDE_MIN_OPACITY = 0.5;
+/**
+ * A sliding workspace fades only down to this opacity. 1: no fade, so the
+ * windows slide as solid cards and the wallpaper never shows through them.
+ */
+const WORKSPACE_SLIDE_MIN_OPACITY = 1;
 const WORKSPACE_GESTURE_FINGERS = 3;
 const WORKSPACE_GESTURE_AXIS_LOCK_PX = 8;
 const WORKSPACE_GESTURE_THRESHOLD_RATIO = 0.22;

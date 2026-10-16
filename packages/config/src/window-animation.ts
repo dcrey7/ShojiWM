@@ -5,6 +5,7 @@ import {
     type WindowStateKey,
 } from "shoji_wm";
 import type { ManagedWindowRect } from "shoji_wm/types";
+import { setAnimationRunning } from "./animation-activity";
 
 export interface RectAnimationOptions {
     suppressSSDRebuild?: boolean;
@@ -107,7 +108,14 @@ export function playRectAnimation(
             mode: "override",
         },
     });
+    // The glass pauses while the window moves: it shows as one solid card,
+    // with no see-through flash and no wallpaper in a strip the app has not
+    // drawn yet.
+    setAnimationRunning("rect", window.id, true);
     setTimeout(() => {
+        if (activeRectTarget(window, windowRectState)?.token === token) {
+            setAnimationRunning("rect", window.id, false);
+        }
         clearActiveRectTarget(window, windowRectState, token);
     }, duration);
 }
@@ -118,4 +126,5 @@ export function stopRectAnimation(
 ): void {
     setActiveRectTarget(window, windowRectState, undefined);
     window.cancelAnimation(rectAnimationChannel(windowRectState));
+    setAnimationRunning("rect", window.id, false);
 }

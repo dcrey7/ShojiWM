@@ -1,7 +1,7 @@
 import { computed, signal } from "shoji_wm";
 
 /**
- * Which window animations run now (Magic Lamp, wobbly drag).
+ * Which window animations run now (Magic Lamp, wobbly drag, tile moves).
  *
  * The glass blur behind a moving window must be redone on every frame. When
  * another program (a training job, a game) keeps the GPU busy, that extra
