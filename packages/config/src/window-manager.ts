@@ -1,5 +1,4 @@
 import {
-  animationVariable,
   createWindowStack,
   createWindowState,
   dropWindowState,
@@ -175,10 +174,8 @@ export const WINDOW_STATE_SNAP_MONITOR = createWindowState<string | null>(
 );
 
 const OPEN_CLOSE_ANIMATION_DURATION = seconds(0.5);
-/** Close: the window zooms out a little around its centre and fades. */
-const CLOSE_ZOOM_DURATION = seconds(0.25);
-const CLOSE_ZOOM_END_SCALE = 0.85;
-const CLOSE_ZOOM = animationVariable("close-zoom");
+/** The close lamp's run plus a little slack, so the snapshot outlives it. */
+const CLOSE_LAMP_SLACK_MS = 120;
 
 /**
  * Windows that always float, also on a tiled workspace:
@@ -781,7 +778,7 @@ export class HybridWindowManager {
     window.focus();
     this.windowStack.add(window);
 
-    window.setCloseAnimationDuration(CLOSE_ZOOM_DURATION);
+    window.setCloseAnimationDuration(OPEN_CLOSE_ANIMATION_DURATION);
   }
 
   private trackWindowTileability(window: WaylandWindow) {
@@ -1108,7 +1105,7 @@ export class HybridWindowManager {
     if (!this.windowStack.has(window)) {
       this.windowStack.add(window, { at: "back" });
     }
-    window.setCloseAnimationDuration(CLOSE_ZOOM_DURATION);
+    window.setCloseAnimationDuration(OPEN_CLOSE_ANIMATION_DURATION);
 
     const layoutWasDeferred = this.deferredInitialLayoutWindowIds.delete(
       window.id,
@@ -7772,26 +7769,15 @@ function scheduleOpenAnimation(window: WaylandWindow): void {
 }
 
 function scheduleCloseAnimation(window: WaylandWindow): void {
-  // A GPU scale, so the titlebar and the content shrink together.
-  window.animation.start(CLOSE_ZOOM, {
-    from: 0,
-    to: 1,
-    duration: CLOSE_ZOOM_DURATION,
-    easing: (x) => 1 - (1 - x) ** 3,
+  // The window pours into its taskbar icon, like a minimize (Magic Lamp).
+  // When the lamp is done, the window stays hidden until the snapshot goes.
+  const lampMs = magicLampStart(window, true, () => {
+    window.scheduleAnimation({
+      channel: CLOSE_ANIMATION_CHANNEL,
+      opacity: { from: 0, to: 0, duration: CLOSE_LAMP_SLACK_MS * 4, mode: "override" },
+    });
   });
-  const progress = window.animation.variable(CLOSE_ZOOM);
-  const scale = progress((x) => 1 - (1 - CLOSE_ZOOM_END_SCALE) * x);
-  window.transform.scaleX = scale;
-  window.transform.scaleY = scale;
-  window.scheduleAnimation({
-    channel: CLOSE_ANIMATION_CHANNEL,
-    opacity: {
-      from: 1,
-      to: 0,
-      duration: CLOSE_ZOOM_DURATION,
-      mode: "multiply",
-    },
-  });
+  window.setCloseAnimationDuration(lampMs + CLOSE_LAMP_SLACK_MS);
 }
 
 function scheduleMinimizeAnimation(
