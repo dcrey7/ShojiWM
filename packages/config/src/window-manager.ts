@@ -1,4 +1,5 @@
 import {
+  animationVariable,
   createWindowStack,
   createWindowState,
   dropWindowState,
@@ -174,6 +175,10 @@ export const WINDOW_STATE_SNAP_MONITOR = createWindowState<string | null>(
 );
 
 const OPEN_CLOSE_ANIMATION_DURATION = seconds(0.5);
+/** Close: the window zooms out a little around its centre and fades. */
+const CLOSE_ZOOM_DURATION = seconds(0.25);
+const CLOSE_ZOOM_END_SCALE = 0.85;
+const CLOSE_ZOOM = animationVariable("close-zoom");
 
 /**
  * Windows that always float, also on a tiled workspace:
@@ -205,7 +210,6 @@ const UNMAXIMIZE_GRAB_ANIMATION_DURATION = 90;
 const RESTORE_ACTIVATE_GRACE_MS = 100;
 export const WINDOW_MANAGEMENT_EASING = cubicBezier(0.1, 0.9, 0.2, 1.0);
 const WINDOW_OPEN_EASING = cubicBezier(0.1, 1.1, 0.1, 1.1);
-const WINDOW_CLOSE_EASING = cubicBezier(0.3, -0.3, 0, 1);
 /** Offset between floating windows that would otherwise open on the same spot. */
 const FLOATING_CASCADE_STEP = 32;
 export const TILE_ANIMATION_DURATION = seconds(0.5);
@@ -777,7 +781,7 @@ export class HybridWindowManager {
     window.focus();
     this.windowStack.add(window);
 
-    window.setCloseAnimationDuration(OPEN_CLOSE_ANIMATION_DURATION);
+    window.setCloseAnimationDuration(CLOSE_ZOOM_DURATION);
   }
 
   private trackWindowTileability(window: WaylandWindow) {
@@ -1104,7 +1108,7 @@ export class HybridWindowManager {
     if (!this.windowStack.has(window)) {
       this.windowStack.add(window, { at: "back" });
     }
-    window.setCloseAnimationDuration(OPEN_CLOSE_ANIMATION_DURATION);
+    window.setCloseAnimationDuration(CLOSE_ZOOM_DURATION);
 
     const layoutWasDeferred = this.deferredInitialLayoutWindowIds.delete(
       window.id,
@@ -1690,6 +1694,8 @@ export class HybridWindowManager {
         }
       } else if (successor && workspace.shouldTile(successor)) {
         workspace.focusWindow(successor);
+        // The tiles fill the gap once the lamp is done (the hold runs it).
+        workspace.applyLayout();
       } else {
         workspace.applyLayout();
       }
@@ -7766,20 +7772,23 @@ function scheduleOpenAnimation(window: WaylandWindow): void {
 }
 
 function scheduleCloseAnimation(window: WaylandWindow): void {
+  // A GPU scale, so the titlebar and the content shrink together.
+  window.animation.start(CLOSE_ZOOM, {
+    from: 0,
+    to: 1,
+    duration: CLOSE_ZOOM_DURATION,
+    easing: (x) => 1 - (1 - x) ** 3,
+  });
+  const progress = window.animation.variable(CLOSE_ZOOM);
+  const scale = progress((x) => 1 - (1 - CLOSE_ZOOM_END_SCALE) * x);
+  window.transform.scaleX = scale;
+  window.transform.scaleY = scale;
   window.scheduleAnimation({
     channel: CLOSE_ANIMATION_CHANNEL,
-    rect: {
-      from: { x: 0, y: 0, width: 0, height: 0 },
-      to: { x: 0, y: 120, width: 0, height: 0 },
-      duration: OPEN_CLOSE_ANIMATION_DURATION,
-      easing: WINDOW_CLOSE_EASING,
-      mode: "add",
-    },
     opacity: {
       from: 1,
       to: 0,
-      duration: OPEN_CLOSE_ANIMATION_DURATION,
-      easing: WINDOW_CLOSE_EASING,
+      duration: CLOSE_ZOOM_DURATION,
       mode: "multiply",
     },
   });
