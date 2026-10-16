@@ -786,6 +786,13 @@ pub struct WindowDecorationState {
     /// workspace-switch animation must still be renderable while it is bringing
     /// an idle window back on screen.
     pub managed_window_animation_active: bool,
+    /// True while a rect animation changes this window's size. Rendering then
+    /// shows a picture of the client taken when the animation started,
+    /// stretched to the moving slot, instead of the client's own buffers:
+    /// those lag the slot and show black or empty edges (X11 clients most).
+    pub resize_frozen: bool,
+    /// The renderer took the picture for the current `resize_frozen` run.
+    pub resize_snapshot_taken: bool,
     /// The client size (width, height) most recently delivered via xdg /
     /// X11 configure. Tracked separately from `client_rect` because we want
     /// to keep the client configured at the animation's final target size for
@@ -3270,6 +3277,8 @@ impl ShojiWM {
                             visual_transform,
                             managed_window,
                             managed_window_animation_active,
+                            resize_frozen: false,
+                            resize_snapshot_taken: false,
                             last_configured_client_size,
                             static_visual_transform: static_transform,
                             static_managed_window: static_managed,
@@ -5112,6 +5121,15 @@ impl ShojiWM {
             else {
                 continue;
             };
+
+            // A rect animation that still changes the size: draw the frozen
+            // picture of the client meanwhile (see `resize_frozen`).
+            if let Some(decoration) = self.window_decorations.get_mut(&window) {
+                decoration.resize_frozen = rect_override_target_raw.is_some_and(|target| {
+                    (target.width - desired_root_raw.width).abs() > 0.5
+                        || (target.height - desired_root_raw.height).abs() > 0.5
+                });
+            }
 
             // The integer pipeline below may conclude "noop" while the
             // fractional origin remainder still moved (sub-logical-pixel

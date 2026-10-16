@@ -15181,6 +15181,37 @@ fn tty_window_stack_elements(
                     transform_snapshot_elements(vec![element], visual_state).ok()
                 })
                 .unwrap_or_default()
+            } else if let Some(frozen) = window_decorations
+                .get(window)
+                .filter(|decoration| {
+                    decoration.resize_frozen
+                        && decoration.resize_snapshot_taken
+                        && decoration.managed_window_animation_active
+                })
+                .and_then(|decoration| {
+                    live_window_snapshots
+                        .get(&decoration.snapshot.id)
+                        .map(|snapshot| {
+                            let mut frozen = snapshot.clone();
+                            frozen.rect = decoration.client_rect;
+                            frozen
+                        })
+                })
+            {
+                // A size animation: the client's picture from its start,
+                // stretched to the moving slot. The client's own buffers lag
+                // the slot and would show black or empty edges meanwhile.
+                snapshot::live_snapshot_element(
+                    &*renderer,
+                    &frozen,
+                    output_geo,
+                    scale,
+                    visual_state.opacity,
+                )
+                .and_then(|element| {
+                    transform_snapshot_elements(vec![element], visual_state).ok()
+                })
+                .unwrap_or_default()
             } else if let Some(content_clip) = content_clip {
                 let clipped = window_render::clipped_surface_elements(
                     window,
@@ -16521,9 +16552,17 @@ fn tty_window_stack_elements(
             {
                 snapshot::retarget_snapshot_rect(live_snapshot, decoration.client_rect);
             }
+            // A size animation just started: take a fresh picture of the
+            // client now, before its resized buffers arrive.
+            let resize_freeze_capture = primary
+                && window_decorations.get(window).is_some_and(|decoration| {
+                    decoration.resize_frozen && !decoration.resize_snapshot_taken
+                });
             let should_seed_close_snapshot = primary
-                && window_decorations
+                && (resize_freeze_capture
+                    || window_decorations
                 .get(window)
+                .filter(|decoration| !decoration.resize_frozen)
                 .map(|decoration| {
                     live_window_snapshots
                         .get(&decoration.snapshot.id)
@@ -16533,7 +16572,7 @@ fn tty_window_stack_elements(
                         })
                         .unwrap_or(true)
                 })
-                .unwrap_or(false);
+                .unwrap_or(false));
             if should_seed_close_snapshot {
                 let snapshot_capture_started_at = Instant::now();
                 timescope::scope!("tty live snapshot capture");
@@ -16554,6 +16593,10 @@ fn tty_window_stack_elements(
                 let elapsed_ms = snapshot_capture_started_at.elapsed().as_secs_f64() * 1000.0;
                 snapshot_capture_elapsed_ms += elapsed_ms;
                 window_timing.live_snapshot_refresh_ms += elapsed_ms;
+            }
+            if primary && let Some(decoration) = window_decorations.get_mut(window) {
+                decoration.resize_snapshot_taken = decoration.resize_frozen
+                    && (decoration.resize_snapshot_taken || resize_freeze_capture);
             }
 
             // Content dirtiness is consumed by the transform-snapshot path above. The close
