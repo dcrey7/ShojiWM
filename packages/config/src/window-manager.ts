@@ -211,8 +211,6 @@ const WINDOW_OPEN_EASING = cubicBezier(0.1, 1.1, 0.1, 1.1);
 const FLOATING_CASCADE_STEP = 32;
 /** Tiles moving and resizing: short, so the in-between frames pass quickly. */
 export const TILE_ANIMATION_DURATION = seconds(0.3);
-/** Full on a right-hand tile: the wait before the view slides to its new page. */
-const MAXIMIZE_NEXT_PAGE_SLIDE_DELAY_MS = 250;
 // A workspace switch slides like the tile strip scrolls: same duration and
 // easing (WINDOW_MANAGEMENT_EASING) as a tile move.
 const WORKSPACE_SWITCH_ANIMATION_DURATION = seconds(0.5);
@@ -2349,9 +2347,13 @@ export class HybridWindowManager {
     tree: TileTree,
     others: WaylandWindow[],
   ) {
-    // Three steps you can follow: this page closes the gap, the view slides
-    // to the next page, and there the window grows from its old place.
+    // One motion, and the view stays on the window: the view slides one page
+    // right while the window grows to the full page. The window starts one
+    // page to the left on its new page, so with the slide's offset it stays
+    // where it was on screen. The other windows slide away to the left and
+    // fill their page.
     const oldRect = window.state[WINDOW_STATE_RECT]();
+    const distance = this.workspaceTransitionDistance(workspace.monitor);
     const side = this.insertEmptyWorkspaceAfter(workspace.monitor, workspace.index);
     const moved = workspace.takeWindowForMove(window);
     if (!moved) {
@@ -2363,25 +2365,34 @@ export class HybridWindowManager {
       otherIds: others.map((other) => other.id),
       selfMoved: true,
     });
-    // It waits on the next page at its old place until the view is there:
-    // the hold keeps the slide from laying that page out early.
-    const releaseSide = side.holdLayout();
     side.setTiledLayoutTree({ kind: "leaf", id: window.id });
-    stopRectAnimation(window, WINDOW_STATE_RECT);
-    window.state[WINDOW_STATE_RECT].set(oldRect);
+    this.slideWithWindow(window, oldRect, -distance, side);
     workspace.applyLayout();
     this.applyWorkspaceStackPolicy(workspace);
-    this.applyWorkspaceStackPolicy(side);
-    this.workspaceChangeBroadcaster?.();
-    setTimeout(() => {
-      this.switchWorkspaceTo(side.monitor, side.index);
-      window.focus();
-      setTimeout(() => {
-        releaseSide();
-        side.applyLayout();
-        this.applyWorkspaceStackPolicy(side);
-      }, WORKSPACE_SWITCH_ANIMATION_DURATION);
-    }, MAXIMIZE_NEXT_PAGE_SLIDE_DELAY_MS);
+    this.switchWorkspaceTo(side.monitor, side.index);
+    window.focus();
+  }
+
+  /**
+   * Put `window` at `rect` moved by `shiftX` on `target` (the workspace the
+   * view is about to slide to), so that the slide's start offset cancels the
+   * shift: on screen the window starts where it is. Its next layout then runs
+   * in step with the slide.
+   */
+  private slideWithWindow(
+    window: WaylandWindow,
+    rect: ManagedWindowRect,
+    shiftX: number,
+    target: Workspace,
+  ) {
+    stopRectAnimation(window, WINDOW_STATE_RECT);
+    window.state[WINDOW_STATE_RECT].set({
+      x: read(rect.x) + shiftX,
+      y: read(rect.y),
+      width: read(rect.width),
+      height: read(rect.height),
+    });
+    target.setNextLayoutDuration(WORKSPACE_SWITCH_ANIMATION_DURATION);
   }
 
   /**
@@ -2399,10 +2410,19 @@ export class HybridWindowManager {
         .map((id) => this.findWindowById(id))
         .map((other) => (other ? this.findWorkspaceForWindow(other) : undefined))
         .find((found) => found !== undefined && found !== workspace);
+      const fullRect = window.state[WINDOW_STATE_RECT]();
       const moved = home ? workspace.takeWindowForMove(window) : undefined;
       if (home && moved) {
         home.addMovedWindow(window, moved.snapshot);
         home.setTiledLayoutTree(record.tree);
+        // The mirror of the maximize: the view slides back left with the
+        // window, which shrinks into its old place.
+        this.slideWithWindow(
+          window,
+          fullRect,
+          this.workspaceTransitionDistance(home.monitor),
+          home,
+        );
         workspace = home;
         this.switchWorkspaceTo(home.monitor, home.index);
       }
@@ -4328,6 +4348,7 @@ export class Workspace {
   private layoutHolds = 0;
   /** A layout was asked for during a hold. */
   private layoutPending = false;
+  private nextLayoutDuration: number | null = null;
   private readonly naturalRootRect: (
     window: WaylandWindow,
   ) => ManagedWindowRect;
@@ -5509,6 +5530,14 @@ export class Workspace {
     };
   }
 
+  /**
+   * The next tile layout animates in `duration` instead of the usual tile
+   * time, once: to run in step with a workspace slide.
+   */
+  public setNextLayoutDuration(duration: number) {
+    this.nextLayoutDuration = duration;
+  }
+
   public applyLayout(options: LayoutOptions = {}) {
     if (!this.isTiled) {
       return;
@@ -5581,7 +5610,7 @@ export class Workspace {
             WINDOW_STATE_RECT,
             rect,
             WINDOW_MANAGEMENT_EASING,
-            TILE_ANIMATION_DURATION,
+            this.nextLayoutDuration ?? TILE_ANIMATION_DURATION,
             animationOptions,
           );
         } else {
@@ -5593,6 +5622,7 @@ export class Workspace {
       }
     }
 
+    this.nextLayoutDuration = null;
     hotReloadDebug("workspace-apply-layout", {
       monitor: this.monitor,
       index: this.index,
