@@ -2373,6 +2373,15 @@ impl ShojiWM {
                 dirty_rect_window_ids.insert(window_id.clone());
             }
 
+            // Only X11 clients (Chrome through the X11 bridge) lag a resize
+            // badly enough to need the frozen picture; native clients keep
+            // their own live buffers.
+            let x11_bridged = self
+                .window_decorations
+                .iter()
+                .find(|(_, decoration)| decoration.snapshot.id == window_id)
+                .is_some_and(|(window, _)| self.window_uses_xwayland_refresh_override(window));
+            let resize_remaining_ms = resize_remaining_ms.filter(|_| x11_bridged);
             for (_, decoration) in self.window_decorations.iter_mut() {
                 if decoration.snapshot.id != window_id {
                     continue;

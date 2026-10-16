@@ -746,6 +746,16 @@ if (!INSIDE_KDE) {
     ],
     restart: "on-exit",
   });
+  // Owns KWin's session D-Bus object, so Plasma's Log Out, Restart and
+  // Shut Down work: they ask KWin to end the session (see the helper).
+  COMPOSITOR.process.service("session-dbus", {
+    command: [
+      "sh",
+      "-c",
+      'exec python3 "$HOME/.config/shojiwm/src/helpers/session-dbus.py"',
+    ],
+    restart: "on-exit",
+  });
   // The KDE window that asks for your password when an app needs admin rights.
   COMPOSITOR.process.service("polkit-agent", {
     command: ["/usr/lib/polkit-kde-authentication-agent-1"],

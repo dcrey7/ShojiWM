@@ -2124,7 +2124,7 @@ impl ShojiWM {
         let _ = self.display_handle.flush_clients();
     }
 
-    fn window_uses_xwayland_refresh_override(&self, window: &Window) -> bool {
+    pub(crate) fn window_uses_xwayland_refresh_override(&self, window: &Window) -> bool {
         if window.x11_surface().is_some() {
             return true;
         }
