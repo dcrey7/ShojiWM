@@ -1690,7 +1690,7 @@ COMPOSITOR.window.composition = (window: WaylandWindow) => {
 };
 
 // macOS-style traffic lights. Unfocused windows show grey lights, as on macOS.
-const TRAFFIC_LIGHT_SIZE = 15;
+const TRAFFIC_LIGHT_SIZE = 14;
 /** The title bar's padding left and right, and the space between its items. */
 const TITLEBAR_PADDING_X = 8;
 const TITLEBAR_GAP = 8;
