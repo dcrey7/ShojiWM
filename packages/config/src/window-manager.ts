@@ -211,6 +211,8 @@ const WINDOW_OPEN_EASING = cubicBezier(0.1, 1.1, 0.1, 1.1);
 const FLOATING_CASCADE_STEP = 32;
 /** Tiles moving and resizing: short, so the in-between frames pass quickly. */
 export const TILE_ANIMATION_DURATION = seconds(0.3);
+/** How many past layouts a page keeps for windows that come back. */
+const LAYOUT_MEMORY_SIZE = 8;
 // A workspace switch slides like the tile strip scrolls: same duration and
 // easing (WINDOW_MANAGEMENT_EASING) as a tile move.
 const WORKSPACE_SWITCH_ANIMATION_DURATION = seconds(0.5);
@@ -869,6 +871,8 @@ export class HybridWindowManager {
    * config reload during a maximize still brings them back.
    */
   private readonly tiledMaximizeById = new Map<string, TiledMaximizeRecord>();
+  /** Minimized windows, oldest first: Super+Shift+H restores the last one. */
+  private minimizedOrder: string[] = [];
   /** The workspace a closing window left (from onStartClose to onClose). */
   private readonly closedFromWorkspaceByWindowId = new Map<string, Workspace>();
   /** Super+R left "full": the share step to apply once the others are back. */
@@ -1224,6 +1228,7 @@ export class HybridWindowManager {
     }
     const closedFrom = this.closedFromWorkspaceByWindowId.get(window.id);
     this.closedFromWorkspaceByWindowId.delete(window.id);
+    this.minimizedOrder = this.minimizedOrder.filter((id) => id !== window.id);
     if (closedFrom) {
       this.leaveEmptiedWorkspace(closedFrom);
     }
@@ -1695,6 +1700,10 @@ export class HybridWindowManager {
         event.window.state[WINDOW_STATE_MINIMIZE_VISUAL_IDLE].set(false);
       }
       event.window.state[WINDOW_STATE_MINIMIZED].set(event.minimized);
+      this.minimizedOrder = this.minimizedOrder.filter((id) => id !== event.window.id);
+      if (event.minimized) {
+        this.minimizedOrder.push(event.window.id);
+      }
       if (event.minimized) {
         event.window.state[WINDOW_STATE_MINIMIZE_VISUAL_IDLE].set(true);
       }
@@ -2507,6 +2516,27 @@ export class HybridWindowManager {
       1,
       WORKSPACE_SWITCH_ANIMATION_DURATION,
     );
+  }
+
+  /**
+   * Super+Shift+H: bring back the window minimized last, on this page if
+   * one is; else the last one anywhere.
+   */
+  public restoreLastMinimized() {
+    const current = this.getCurrentWorkspace();
+    const minimized = this.minimizedOrder
+      .map((id) => this.findWindowById(id))
+      .filter(
+        (window): window is WaylandWindow =>
+          window !== undefined && window.state[WINDOW_STATE_MINIMIZED](),
+      );
+    const newestFirst = [...minimized].reverse();
+    const target =
+      newestFirst.find((window) => this.findWorkspaceForWindow(window) === current) ??
+      newestFirst[0];
+    if (target) {
+      this.activateWindowById(target.id);
+    }
   }
 
   public toggleFocusedWindowMaximize() {
@@ -4380,6 +4410,12 @@ export class Workspace {
   private layoutHolds = 0;
   /** A layout was asked for during a hold. */
   private layoutPending = false;
+  /**
+   * Tiled mode: the layouts from just before windows left this page
+   * (minimized, moved, closed), newest first. A window that comes back takes
+   * its old place and size from them.
+   */
+  private layoutMemory: TileTree[] = [];
   private nextLayoutDuration: number | null = null;
   private readonly naturalRootRect: (
     window: WaylandWindow,
@@ -5778,12 +5814,22 @@ export class Workspace {
     const leaving = leafIds(tree).filter(
       (id) => !tileIds.has(id) && !this.awaitedTreeIds.has(id),
     );
+    if (leaving.length > 0 && tree) {
+      this.layoutMemory = [tree, ...this.layoutMemory].slice(0, LAYOUT_MEMORY_SIZE);
+    }
     for (const id of leaving) {
       tree = removeAndSettle(tree, id, this.tiledArea(), TILE_GAP);
     }
     const missing = tileable.filter((window) => !hasLeaf(tree, window.id));
     const wasSolo = tree?.kind === "leaf";
-    if (missing.length > 0) {
+    const remembered =
+      missing.length > 0
+        ? this.rememberedTree(tree, missing.map((window) => window.id))
+        : null;
+    if (remembered) {
+      // Windows coming back (from minimize, say) take their old places.
+      tree = remembered;
+    } else if (missing.length > 0) {
       const area = this.tiledArea();
       const recentFocusOrder = this.recentFocusOrder();
       let focusedId = this.tiledAnchorId(tree);
@@ -5813,6 +5859,28 @@ export class Workspace {
       this.soloShare = 1;
     }
     this.tree = tree;
+  }
+
+  /**
+   * The newest remembered layout that holds every window of `tree` and every
+   * one of `returningIds`, without the windows that are not here any more.
+   */
+  private rememberedTree(tree: TileTree, returningIds: string[]): TileTree {
+    const wanted = new Set([...leafIds(tree), ...returningIds]);
+    for (const memory of this.layoutMemory) {
+      const ids = leafIds(memory);
+      if (![...wanted].every((id) => ids.includes(id))) {
+        continue;
+      }
+      let pruned = memory;
+      for (const id of ids) {
+        if (!wanted.has(id)) {
+          pruned = removeAndSettle(pruned, id, this.tiledArea(), TILE_GAP);
+        }
+      }
+      return pruned;
+    }
+    return null;
   }
 
   /** The tile the tiled-mode keys act on: the focused one, else the active one. */

@@ -226,6 +226,12 @@ export function createKeymap(deps: KeymapDeps): KeyEntry[] {
       binds: [{ keys: "Super+H", action: () => focusedWindow()?.minimize() }],
     },
     {
+      id: "restore-minimized",
+      group: "Windows",
+      description: "Bring back the last minimized window",
+      binds: [{ keys: "Super+Shift+H", action: () => wm.restoreLastMinimized() }],
+    },
+    {
       id: "maximize",
       group: "Windows",
       description: "Maximize / restore",
