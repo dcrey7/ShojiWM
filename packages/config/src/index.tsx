@@ -1352,13 +1352,19 @@ function plasmaShellComposition(
   window: WaylandWindow,
   plasma: PlasmaSurfaceState,
 ) {
-  const rect = computed(() => ({
-    // Before plasmashell sends a position, keep the window where it is.
-    x: plasma.x ?? window.position.x,
-    y: plasma.y ?? window.position.y,
-    width: window.position.width,
-    height: window.position.height,
-  }));
+  const rect = computed(() => {
+    // Read the position here, not in the composition: a tooltip that moves
+    // (from one taskbar icon to the next) then only moves; it is not built
+    // again, which made it flicker.
+    const live = window.plasma() ?? plasma;
+    return {
+      // Before plasmashell sends a position, keep the window where it is.
+      x: live.x ?? window.position.x,
+      y: live.y ?? window.position.y,
+      width: window.position.width,
+      height: window.position.height,
+    };
+  });
   const zIndex = PLASMA_Z_INDEX[plasma.role];
   if (plasma.role === "panel" || plasma.role === "desktop") {
     return (
@@ -1396,7 +1402,13 @@ function usesClientDecoration(decoration: WindowDecorationState): boolean {
 }
 
 COMPOSITOR.window.composition = (window: WaylandWindow) => {
-  const plasma = window.plasma();
+  // A plasmashell window stays one: read it without subscribing, so its
+  // moves do not build the composition again. Other windows subscribe, in
+  // case the plasma role or position comes after the first composition.
+  let plasma = window.plasma.peek();
+  if (!plasma || !isPlasmaShellSurface(plasma)) {
+    plasma = window.plasma();
+  }
   if (plasma && isPlasmaShellSurface(plasma)) {
     return plasmaShellComposition(window, plasma);
   }
