@@ -704,11 +704,15 @@ if (!INSIDE_KDE) {
   // The KDE desktop: your taskbar, start menu, icons, tray and wallpaper.
   // It waits up to 3 s for the shortcut service, then starts. Errors go to
   // ~/.local/state/plasmashell.log.
+  // Dock zoom: ~/.local/lib/dock-zoom holds KDE's taskbar rebuilt with a
+  // Mac-style hover zoom (cachyos-setup shojiwm/dock-zoom). plasmashell
+  // loads it only while plasma-desktop is the version it was built for;
+  // after a KDE update the normal taskbar comes back until a rebuild.
   COMPOSITOR.process.service("plasmashell", {
     command: [
       "sh",
       "-c",
-      'for i in 1 2 3 4 5 6; do qdbus6 org.kde.kglobalaccel >/dev/null 2>&1 && break; sleep 0.5; done; exec plasmashell --no-respawn 2>>"$HOME/.local/state/plasmashell.log"',
+      'DZ="$HOME/.local/lib/dock-zoom"; if [ -f "$DZ/built-for" ] && [ "$(pacman -Q plasma-desktop 2>/dev/null)" = "$(cat "$DZ/built-for")" ]; then export QT_PLUGIN_PATH="$DZ/plugins${QT_PLUGIN_PATH:+:$QT_PLUGIN_PATH}"; fi; for i in 1 2 3 4 5 6; do qdbus6 org.kde.kglobalaccel >/dev/null 2>&1 && break; sleep 0.5; done; exec plasmashell --no-respawn 2>>"$HOME/.local/state/plasmashell.log"',
     ],
     // The session says "ShojiWM"; plasmashell wants to know it runs KDE.
     // XDG_MENU_PREFIX: Kickoff reads its app list from plasma-applications.menu.

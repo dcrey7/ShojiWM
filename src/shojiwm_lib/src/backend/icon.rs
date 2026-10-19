@@ -72,7 +72,7 @@ pub struct IconSpec {
 pub struct IconRasterizer {
     cache: HashMap<IconCacheKey, Option<MemoryRenderBuffer>>,
     path_cache: HashMap<IconPathCacheKey, Option<PathBuf>>,
-    icon_index: Option<HashMap<String, Vec<PathBuf>>>,
+    icon_index: Option<HashMap<String, Vec<RankedIconPath>>>,
     async_job_sender: Option<AsyncAssetJobSender>,
     async_buffers: HashMap<u64, TimedIconBuffer>,
     async_in_flight: HashSet<u64>,
@@ -90,6 +90,14 @@ struct IconCacheKey {
 struct IconPathCacheKey {
     names: String,
     target: i32,
+}
+
+/// An icon file and the rank of the theme it comes from: 0 is the user's
+/// icon theme, then the themes it inherits from. Lower ranks win.
+#[derive(Debug, Clone)]
+struct RankedIconPath {
+    path: PathBuf,
+    theme_rank: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -274,16 +282,11 @@ impl IconRasterizer {
         resolved
     }
 
-    fn ensure_icon_index(&mut self) -> &HashMap<String, Vec<PathBuf>> {
+    fn ensure_icon_index(&mut self) -> &HashMap<String, Vec<RankedIconPath>> {
         if self.icon_index.is_none() {
-            let mut index: HashMap<String, Vec<PathBuf>> = HashMap::new();
-            for root in icon_roots() {
-                if !root.exists() {
-                    continue;
-                }
-                build_icon_index(&root, &mut index);
-            }
-            self.icon_index = Some(index);
+            let roots = icon_roots();
+            let order = icon_theme_order(&current_icon_theme(), &roots);
+            self.icon_index = Some(build_ranked_icon_index(&roots, &order));
         }
 
         self.icon_index
@@ -668,62 +671,119 @@ fn push_unique_name(names: &mut Vec<String>, name: &str) {
     }
 }
 
+/// Like the freedesktop icon lookup: the first name the window asks for
+/// wins; for that name, the earliest theme in the user's chain wins; then
+/// the size closest to the target.
 fn find_icon_path_in_index(
-    index: &HashMap<String, Vec<PathBuf>>,
+    index: &HashMap<String, Vec<RankedIconPath>>,
     names: &[String],
     width: i32,
     height: i32,
 ) -> Option<PathBuf> {
-    let mut best: Option<(PathBuf, i32)> = None;
     let target = width.max(height);
 
     for name in names {
         let Some(paths) = index.get(name) else {
             continue;
         };
-        for path in paths {
-            consider_icon_path(path, target, &mut best);
+        let mut best: Option<(PathBuf, i64)> = None;
+        for ranked in paths {
+            consider_icon_path(ranked, target, &mut best);
+        }
+        if let Some((path, _)) = best {
+            return Some(path);
         }
     }
 
-    best.map(|(path, _)| path)
+    None
 }
 
-fn build_icon_index(dir: &Path, index: &mut HashMap<String, Vec<PathBuf>>) {
+/// Index every PNG and SVG under the icon roots by name. Each file keeps the
+/// rank of its theme (the folder right under a root); files of themes outside
+/// the user's chain, and loose files like pixmaps, rank after the chain.
+fn build_ranked_icon_index(
+    roots: &[PathBuf],
+    order: &HashMap<String, usize>,
+) -> HashMap<String, Vec<RankedIconPath>> {
+    let loose_rank = order.len();
+    let other_theme_rank = order.len() + 1;
+    let mut index = HashMap::new();
+    for root in roots {
+        let Ok(entries) = fs::read_dir(root) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                let theme = entry.file_name().to_string_lossy().into_owned();
+                // Themes in the chain are often mostly links into other
+                // themes, so follow links there. All themes with links
+                // followed are ~2 million files: too much memory.
+                match order.get(&theme) {
+                    Some(&rank) => build_icon_index(&path, rank, true, 0, &mut index),
+                    None => build_icon_index(&path, other_theme_rank, false, 0, &mut index),
+                }
+            } else if path.is_file() {
+                add_icon_file(&path, loose_rank, &mut index);
+            }
+        }
+    }
+    index
+}
+
+fn build_icon_index(
+    dir: &Path,
+    theme_rank: usize,
+    follow_links: bool,
+    depth: usize,
+    index: &mut HashMap<String, Vec<RankedIconPath>>,
+) {
+    // Themes are a few folders deep; the limit also stops link loops.
+    const MAX_DEPTH: usize = 6;
+    if depth > MAX_DEPTH {
+        return;
+    }
     let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
 
     for entry in entries.flatten() {
         let path = entry.path();
-        let Ok(file_type) = entry.file_type() else {
-            continue;
+        let (is_dir, is_file) = if follow_links {
+            (path.is_dir(), path.is_file())
+        } else {
+            match entry.file_type() {
+                Ok(kind) => (kind.is_dir(), kind.is_file()),
+                Err(_) => continue,
+            }
         };
-
-        if file_type.is_dir() {
-            build_icon_index(&path, index);
-            continue;
+        if is_dir {
+            build_icon_index(&path, theme_rank, follow_links, depth + 1, index);
+        } else if is_file {
+            add_icon_file(&path, theme_rank, index);
         }
-
-        if !file_type.is_file() {
-            continue;
-        }
-
-        let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
-            continue;
-        };
-        let Some(extension) = path.extension().and_then(|ext| ext.to_str()) else {
-            continue;
-        };
-        if !matches!(extension.to_ascii_lowercase().as_str(), "png" | "svg") {
-            continue;
-        }
-
-        index.entry(stem.to_string()).or_default().push(path);
     }
 }
 
-fn consider_icon_path(path: &Path, target: i32, best: &mut Option<(PathBuf, i32)>) {
+fn add_icon_file(path: &Path, theme_rank: usize, index: &mut HashMap<String, Vec<RankedIconPath>>) {
+    let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
+        return;
+    };
+    let Some(extension) = path.extension().and_then(|ext| ext.to_str()) else {
+        return;
+    };
+    if !matches!(extension.to_ascii_lowercase().as_str(), "png" | "svg") {
+        return;
+    }
+
+    index.entry(stem.to_string()).or_default().push(RankedIconPath {
+        path: path.to_path_buf(),
+        theme_rank,
+    });
+}
+
+fn consider_icon_path(ranked: &RankedIconPath, target: i32, best: &mut Option<(PathBuf, i64)>) {
+    let path = &ranked.path;
     let Some(extension) = path.extension().and_then(|ext| ext.to_str()) else {
         return;
     };
@@ -742,12 +802,86 @@ fn consider_icon_path(path: &Path, target: i32, best: &mut Option<(PathBuf, i32)
     } else {
         50
     };
-    let score = size_penalty + path_bonus + extension_penalty;
+    // The theme comes first; the other penalties stay far below 100 000.
+    let score = ranked.theme_rank as i64 * 100_000
+        + i64::from(size_penalty + path_bonus + extension_penalty);
 
     match best {
         Some((_, current_score)) if *current_score <= score => {}
         _ => *best = Some((path.to_path_buf(), score)),
     }
+}
+
+/// The icon theme KDE uses: `[Icons] Theme=` in kdeglobals (set by System
+/// Settings). Without one, hicolor.
+fn current_icon_theme() -> String {
+    let config_home = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")));
+    config_home
+        .and_then(|dir| fs::read_to_string(dir.join("kdeglobals")).ok())
+        .and_then(|text| ini_value(&text, "Icons", "Theme"))
+        .unwrap_or_else(|| "hicolor".to_string())
+}
+
+/// The user's theme, then the themes it inherits from (depth first, as the
+/// freedesktop spec says), then hicolor last. Maps a theme name to its rank.
+fn icon_theme_order(theme: &str, roots: &[PathBuf]) -> HashMap<String, usize> {
+    fn visit(theme: &str, roots: &[PathBuf], order: &mut Vec<String>) {
+        if theme == "hicolor" || order.iter().any(|seen| seen == theme) {
+            return;
+        }
+        order.push(theme.to_string());
+        for parent in theme_parents(theme, roots) {
+            visit(&parent, roots, order);
+        }
+    }
+
+    let mut order = Vec::new();
+    visit(theme, roots, &mut order);
+    order.push("hicolor".to_string());
+    order
+        .into_iter()
+        .enumerate()
+        .map(|(rank, name)| (name, rank))
+        .collect()
+}
+
+/// `Inherits=` of a theme's index.theme (the first one found in the roots).
+fn theme_parents(theme: &str, roots: &[PathBuf]) -> Vec<String> {
+    roots
+        .iter()
+        .find_map(|root| fs::read_to_string(root.join(theme).join("index.theme")).ok())
+        .and_then(|text| ini_value(&text, "Icon Theme", "Inherits"))
+        .map(|value| {
+            value
+                .split(',')
+                .map(|name| name.trim().to_string())
+                .filter(|name| !name.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// One value from an INI-style file: `key=value` under `[section]`.
+fn ini_value(text: &str, section: &str, key: &str) -> Option<String> {
+    let mut in_section = false;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_section = line == format!("[{section}]");
+            continue;
+        }
+        if !in_section {
+            continue;
+        }
+        if let Some((name, value)) = line.split_once('=') {
+            if name.trim() == key {
+                return Some(value.trim().to_string());
+            }
+        }
+    }
+    None
 }
 
 fn icon_roots() -> Vec<PathBuf> {
@@ -1118,6 +1252,56 @@ fn image_fit_cache_key(fit: Option<ImageFit>) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn icon_lookup_prefers_the_user_theme_chain() {
+        let root = std::env::temp_dir().join(format!("shoji-wm-icon-theme-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let write = |rel: &str, text: &str| {
+            let path = root.join(rel);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, text).unwrap();
+        };
+        // picks inherits base; other is not in the chain but has the exact size.
+        write("picks/index.theme", "[Icon Theme]\nName=picks\nInherits=base,hicolor\n");
+        write("picks/48x48/places/folder.png", "");
+        write("base/index.theme", "[Icon Theme]\nName=base\n");
+        write("base/48x48/places/folder.png", "");
+        write("base/32x32/places/folder-music.png", "");
+        write("other/32x32/places/folder.png", "");
+        write("other/32x32/places/folder-music.png", "");
+
+        // Links: followed inside the chain, not in other themes.
+        write("store/folder-videos.png", "");
+        fs::create_dir_all(root.join("picks/32x32/places")).unwrap();
+        std::os::unix::fs::symlink(root.join("store/folder-videos.png"), root.join("picks/32x32/places/folder-videos.png")).unwrap();
+        std::os::unix::fs::symlink(root.join("store/folder-videos.png"), root.join("other/32x32/places/folder-linked.png")).unwrap();
+
+        let roots = vec![root.clone()];
+        let order = icon_theme_order("picks", &roots);
+        assert_eq!(order.get("picks"), Some(&0));
+        assert_eq!(order.get("base"), Some(&1));
+        assert_eq!(order.get("hicolor"), Some(&2));
+
+        let index = build_ranked_icon_index(&roots, &order);
+        let find = |name: &str| find_icon_path_in_index(&index, &[name.to_string()], 32, 32).unwrap();
+        assert!(find("folder").starts_with(root.join("picks")));
+        assert!(find("folder-music").starts_with(root.join("base")));
+        // The first name wins, even when a later name is in an earlier theme.
+        let both = find_icon_path_in_index(&index, &["folder-music".into(), "folder".into()], 32, 32).unwrap();
+        assert!(both.starts_with(root.join("base")));
+        assert!(find("folder-videos").starts_with(root.join("picks")));
+        assert!(find_icon_path_in_index(&index, &["folder-linked".into()], 32, 32).is_none());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn ini_value_reads_the_right_section() {
+        let text = "[General]\nTheme=nope\n[Icons]\nTheme=shoji-picks\n";
+        assert_eq!(ini_value(text, "Icons", "Theme").as_deref(), Some("shoji-picks"));
+        assert_eq!(ini_value(text, "Missing", "Theme"), None);
+    }
 
     #[test]
     fn asset_cache_key_includes_image_fit() {
