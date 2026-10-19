@@ -377,3 +377,21 @@ test("removing the last window gives an empty tree", () => {
   assert.equal(removeAndSettle(open(WIDE, 1), "1", WIDE, GAP), null);
   assert.deepEqual(rects(removeAndSettle(open(WIDE, 2), "9", WIDE, GAP)), rects(open(WIDE, 2)));
 });
+
+test("swap: two windows of one split keep their sizes", () => {
+  const pair: TileTree = {
+    kind: "split",
+    direction: "row",
+    ratio: 2 / 3,
+    first: { kind: "leaf", id: "chrome" },
+    second: { kind: "leaf", id: "term" },
+  };
+  const before = rects(pair);
+  const after = rects(swap(pair, "term", "chrome"));
+  assert.equal(after.term[0], 0);
+  assert.equal(after.term[2], before.term[2]);
+  assert.equal(after.chrome[2], before.chrome[2]);
+  assert.ok(after.chrome[0] > after.term[0]);
+  // Swapping back gives the start.
+  assert.deepEqual(rects(swap(swap(pair, "term", "chrome"), "chrome", "term")), before);
+});

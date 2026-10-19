@@ -854,6 +854,17 @@ export function swap(tree: TileTree, a: string, b: string): TileTree {
   if (!tree) {
     return null;
   }
+  // Two windows of one split trade places and keep their sizes: the
+  // divider moves with them (a 2/3 | 1/3 pair becomes 1/3 | 2/3).
+  if (
+    tree.kind === "split" &&
+    tree.first.kind === "leaf" &&
+    tree.second.kind === "leaf" &&
+    ((tree.first.id === a && tree.second.id === b) ||
+      (tree.first.id === b && tree.second.id === a))
+  ) {
+    return { ...tree, first: tree.second, second: tree.first, ratio: 1 - tree.ratio };
+  }
   if (tree.kind === "leaf") {
     if (tree.id === a) {
       return { kind: "leaf", id: b };
