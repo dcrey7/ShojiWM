@@ -869,6 +869,8 @@ export class HybridWindowManager {
    * config reload during a maximize still brings them back.
    */
   private readonly tiledMaximizeById = new Map<string, TiledMaximizeRecord>();
+  /** The workspace a closing window left (from onStartClose to onClose). */
+  private readonly closedFromWorkspaceByWindowId = new Map<string, Workspace>();
   /** Super+R left "full": the share step to apply once the others are back. */
   private readonly shareAfterRestoreById = new Map<string, 1 | -1>();
 
@@ -1167,10 +1169,34 @@ export class HybridWindowManager {
       if (nextFocus !== undefined) {
         workspace.applyLayout();
         nextFocus?.focus();
+        this.closedFromWorkspaceByWindowId.set(window.id, workspace);
         break;
       }
     }
     this.syncWorkspaceVisibility();
+  }
+
+  /**
+   * The last window of the page you look at closed: the view goes back to
+   * the page on the left (on the right when there is none), and the empty
+   * page goes away. An empty page you went to yourself stays.
+   */
+  private leaveEmptiedWorkspace(workspace: Workspace) {
+    if (!workspace.isActive() || !workspace.isEmpty()) {
+      return;
+    }
+    const exists = (index: number) =>
+      [...this.workspaces.values()].some(
+        (other) => other.monitor === workspace.monitor && other.index === index,
+      );
+    const target = exists(workspace.index - 1)
+      ? workspace.index - 1
+      : exists(workspace.index + 1)
+        ? workspace.index + 1
+        : null;
+    if (target !== null) {
+      this.switchWorkspaceTo(workspace.monitor, target);
+    }
   }
 
   public onClose(window: WaylandWindow) {
@@ -1193,7 +1219,13 @@ export class HybridWindowManager {
     for (const workspace of this.workspaces.values()) {
       if (workspace.removeWindow(window) !== undefined) {
         workspace.applyLayout();
+        this.closedFromWorkspaceByWindowId.set(window.id, workspace);
       }
+    }
+    const closedFrom = this.closedFromWorkspaceByWindowId.get(window.id);
+    this.closedFromWorkspaceByWindowId.delete(window.id);
+    if (closedFrom) {
+      this.leaveEmptiedWorkspace(closedFrom);
     }
     // The last window of a workspace you are not on: that workspace goes.
     if (this.compactWorkspaces()) {
