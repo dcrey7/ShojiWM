@@ -11,7 +11,7 @@ import {
   type WaylandWindow,
 } from "shoji_wm";
 import { setAnimationRunning } from "./animation-activity";
-import { qualityMinimal, recordAnimationFrame } from "./quality";
+import { qualityMinimal, recordAnimationFrame, retryQualityIfDue } from "./quality";
 import type {
   WindowEffectAssignment,
   WindowEffectHandle,
@@ -437,6 +437,7 @@ export function magicLampStart(
   options: { opening?: boolean } = {},
 ): number {
   // A slow machine gets no lamp: the window minimizes or restores at once.
+  retryQualityIfDue();
   if (qualityMinimal.peek()) {
     onDone();
     return 1;

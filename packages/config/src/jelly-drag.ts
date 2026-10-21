@@ -10,7 +10,7 @@ import {
   type WindowPosition,
 } from "shoji_wm";
 import { setAnimationRunning } from "./animation-activity";
-import { qualityMinimal, recordAnimationFrame } from "./quality";
+import { qualityMinimal, recordAnimationFrame, retryQualityIfDue } from "./quality";
 import type {
   ShaderUniformMap,
   WindowEffectAssignment,
@@ -387,6 +387,7 @@ function startPoll(wobble: Wobble) {
 /** Feed every interactive window move here (KWin: start/step/finish UserMovedResized). */
 export function jellyDragOnWindowMove(event: WindowMoveEvent) {
   // A slow machine gets no wobble: the window just moves.
+  retryQualityIfDue();
   if (qualityMinimal.peek() && !wobbles.get(event.window.id)?.poll) {
     return;
   }

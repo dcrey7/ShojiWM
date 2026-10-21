@@ -63,16 +63,24 @@ function changeLevel(next: number, nowMs: number, lateShare: number) {
 }
 
 /**
- * Report the time since the previous frame of a running animation (ms).
- * Pass 0 for the first frame of an animation; it is ignored.
+ * Take the try one level up when it is due. An effect calls this before it
+ * reads the level: at MINIMAL no animation runs, so no frame would ever
+ * reach `recordAnimationFrame` and the quality would stay down for good.
  */
-export function recordAnimationFrame(deltaMs: number, nowMs: number = Date.now()) {
-  // A try one level up is due: take it.
+export function retryQualityIfDue(nowMs: number = Date.now()) {
   if (retryAtMs !== null && nowMs >= retryAtMs && level.peek() > QUALITY_FULL) {
     retryAtMs = null;
     triedLevel = level.peek() - 1;
     changeLevel(triedLevel, nowMs, 0);
   }
+}
+
+/**
+ * Report the time since the previous frame of a running animation (ms).
+ * Pass 0 for the first frame of an animation; it is ignored.
+ */
+export function recordAnimationFrame(deltaMs: number, nowMs: number = Date.now()) {
+  retryQualityIfDue(nowMs);
   if (deltaMs <= 0) {
     return;
   }
