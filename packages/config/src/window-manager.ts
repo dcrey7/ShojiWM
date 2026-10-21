@@ -1792,10 +1792,11 @@ export class HybridWindowManager {
   }
 
   /**
-   * Minimize-raise toggle (issue #71): activating the already-focused window
-   * from a dock/taskbar minimizes it instead of re-focusing. Floating
-   * workspaces only, and only when the window is on the visible workspace —
-   * activating a window on another workspace keeps the usual switch+focus.
+   * Minimize-raise toggle (issue #71): activating a window you can already
+   * see from a dock/taskbar minimizes it instead of focusing it. Floating:
+   * the focused window. Tiled: any tile in view, focused or not. Only on the
+   * visible workspace: activating a window on another workspace keeps the
+   * usual switch+focus.
    * Routed through `window.minimize()` so the request takes the same Rust
    * round trip as CSD buttons and taskbar set_minimized, keeping every
    * minimize side effect centralized in `onWindowMinimizeRequest`.
@@ -1811,10 +1812,21 @@ export class HybridWindowManager {
     if (!this.presentedWindowIds.has(window.id)) {
       return false;
     }
-    if (!workspace || workspace.isTiled || !workspace.isActive()) {
+    if (!workspace || !workspace.isActive()) {
       return false;
     }
-    if (window.state[WINDOW_STATE_MINIMIZED]() || !window.isFocused()) {
+    if (window.state[WINDOW_STATE_MINIMIZED]()) {
+      return false;
+    }
+    // Tiled: every tile is on screen, so a click on any tile in view
+    // minimizes it (Terminal | Chrome, Terminal focused: one click on Chrome
+    // hides Chrome). Floating: only the focused window, since another one
+    // can sit under a window and the click must bring it up. Scrolling:
+    // never, a column can be off screen.
+    const minimizes = workspace.isTiled
+      ? this.isTileInView(window, workspace)
+      : window.isFocused();
+    if (!minimizes) {
       return false;
     }
     // A restore that just happened means this activate is the tail of the
@@ -1829,6 +1841,24 @@ export class HybridWindowManager {
     }
     window.minimize();
     return true;
+  }
+
+  /**
+   * True when `window` is a tile you can see in full on a tiled workspace:
+   * no maximized or fullscreen window of the workspace covers the tiles.
+   */
+  private isTileInView(window: WaylandWindow, workspace: Workspace): boolean {
+    if (workspace.mode !== "tiled" || !workspace.shouldTile(window)) {
+      return false;
+    }
+    return !workspace
+      .listWindows()
+      .some(
+        (other) =>
+          other.id !== window.id &&
+          !other.state[WINDOW_STATE_MINIMIZED]() &&
+          (other.state[WINDOW_STATE_MAXIMIZED]() || other.state[WINDOW_STATE_FULLSCREEN]()),
+      );
   }
 
   /**
