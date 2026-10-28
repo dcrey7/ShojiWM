@@ -21,17 +21,21 @@ use smithay::{
     reexports::wayland_server::{protocol::wl_surface::WlSurface, Resource},
     utils::{Logical, Point, Rectangle},
 };
+use tracing::info;
 
 /// One client-driven move, from the first request to the button release.
 pub struct ClientMove {
     window: Window,
     /// The window's frame (decorations included) when the move started.
     start_rect: Rectangle<i32, Logical>,
-    /// Where the client area was when the move started; requests are for the
-    /// client area, the move event is for the frame.
-    start_client: Point<i32, Logical>,
+    /// The client area's top-left corner inside the frame (the title bar
+    /// height, the border). Requests are for the client area, the move event
+    /// is for the frame.
+    client_offset: Point<i32, Logical>,
     start_pointer: Point<f64, Logical>,
     last_rect: WindowPositionSnapshot,
+    /// Requests seen, to log only some of them.
+    updates: u32,
 }
 
 /// True for a surface of the embedded xwayland-satellite, i.e. an X11 window.
@@ -79,6 +83,7 @@ impl ShojiWM {
             return;
         };
         let pointer = self.pointer_location();
+        info!(rect = ?client_move.last_rect, ?pointer, "client move end");
         let event = self.client_move_event(
             &client_move,
             WindowMovePhaseSnapshot::End,
@@ -105,16 +110,28 @@ impl ShojiWM {
             return false;
         };
         let root = decoration.layout.root.rect;
-        let client = decoration.client_rect;
+        // From the decoration tree, not the cached `client_rect`: a window
+        // that just opened can still carry the client rect of an older
+        // layout, and the dragged window then trailed far from the pointer.
+        let client = crate::ssd::client_rect_for_frame(decoration, root);
+        let client_offset = Point::from((client.x - root.x, client.y - root.y));
+        info!(
+            ?root,
+            cached_client = ?decoration.client_rect,
+            ?client,
+            pointer = ?self.pointer_location(),
+            "client move start"
+        );
         let client_move = ClientMove {
             window: window.clone(),
             start_rect: Rectangle::new((root.x, root.y).into(), (root.width, root.height).into()),
-            start_client: (client.x, client.y).into(),
+            client_offset,
             start_pointer: self.pointer_location(),
             last_rect: rect_snapshot(Rectangle::new(
                 (root.x, root.y).into(),
                 (root.width, root.height).into(),
             )),
+            updates: 0,
         };
         let event = self.client_move_event(
             &client_move,
@@ -135,10 +152,15 @@ impl ShojiWM {
         let Some(client_move) = self.client_move.as_mut() else {
             return;
         };
-        let delta = requested - client_move.start_client;
+        // The frame goes where the requested client area needs it.
+        let frame = requested - client_move.client_offset;
+        client_move.updates += 1;
+        if client_move.updates % 20 == 1 {
+            info!(?requested, ?frame, ?pointer, "client move update");
+        }
         let rect = WindowPositionSnapshot {
-            x: (client_move.start_rect.loc.x + delta.x) as f64,
-            y: (client_move.start_rect.loc.y + delta.y) as f64,
+            x: frame.x as f64,
+            y: frame.y as f64,
             width: client_move.start_rect.size.w as f64,
             height: client_move.start_rect.size.h as f64,
         };

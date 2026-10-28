@@ -6159,6 +6159,16 @@ fn managed_client_rect_from_current_insets(
     )
 }
 
+/// The client area for a window frame at `root`, worked out from the
+/// decoration tree (the cached `client_rect` can lag one layout behind).
+pub(crate) fn client_rect_for_frame(
+    decoration: &WindowDecorationState,
+    root: LogicalRect,
+) -> LogicalRect {
+    managed_client_rect_for_root(&decoration.tree, root, decoration.layout_scale)
+        .unwrap_or(decoration.client_rect)
+}
+
 fn managed_client_rect_for_root(
     tree: &DecorationTree,
     desired_root: LogicalRect,

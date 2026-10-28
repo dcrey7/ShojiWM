@@ -41,6 +41,7 @@ pub use integration::{
     CachedDecorationBuffer, ContentClip, EffectEvaluationCacheEntry,
     WindowDecorationState,
 };
+pub(crate) use integration::client_rect_for_frame;
 #[cfg(test)]
 pub(crate) use integration::paint_buffers_for_layout;
 pub use interaction::DecorationInteractionSnapshot;
