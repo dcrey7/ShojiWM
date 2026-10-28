@@ -203,9 +203,10 @@ test("dropTarget: the zones over main Chrome (1) and another app (2)", () => {
   // 1 on the left, 2 on the right; 3 is the dragged tab, not placed yet.
   const tree = open(WIDE, 2);
   const target = (x: number, y: number) => dropTarget(tree, "3", x, y, WIDE, GAP, "1");
-  // A: the upper half of the window the drag left, also its strip next to 2.
+  // A: the part of 1 that 1 keeps after a split changes nothing.
   assert.deepEqual(target(640, 300), { targetId: "1", side: null });
-  assert.deepEqual(target(1250, 300), { targetId: "1", side: null });
+  // Over where the new middle column would be (from 1/3 of the screen): 3 columns.
+  assert.deepEqual(target(1000, 300), { targetId: "1", side: "right" });
   // The far left edge: a new column there.
   assert.deepEqual(target(60, 300), { targetId: "1", side: "left" });
   // B: its lower half.
@@ -219,6 +220,20 @@ test("dropTarget: the zones over main Chrome (1) and another app (2)", () => {
   assert.deepEqual(target(2500, 300), { targetId: "2", side: "right" });
   // The gap between them: keep what there is.
   assert.equal(target(1280, 300), null);
+});
+
+test("dropTarget: main at 2/3 splits once the pointer passes 1/3 of the screen", () => {
+  const tree: TileTree = {
+    kind: "split",
+    direction: "row",
+    ratio: 2 / 3,
+    first: { kind: "leaf", id: "1" },
+    second: { kind: "leaf", id: "2" },
+  };
+  const target = (x: number) => dropTarget(tree, "3", x, 300, WIDE, GAP, "1");
+  assert.deepEqual(target(700), { targetId: "1", side: null });
+  assert.deepEqual(target(1280), { targetId: "1", side: "right" });
+  assert.deepEqual(target(1600), { targetId: "1", side: "right" });
 });
 
 test("moveBeside: between two columns gives three equal columns", () => {

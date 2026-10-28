@@ -189,8 +189,14 @@ const TAB_DRAG_GRAB_MARGIN = 40;
 const TAB_DRAG_GRAB_MAX_Y = 30;
 /** A Chrome tab window whose drag never starts takes a tile after this. */
 const CLIENT_DRAG_PLACE_WAIT_MS = 2000;
-/** A dragged tab window that merges back into Chrome fades out this fast. */
-const TAB_DRAG_CLOSE_FADE_MS = 120;
+/** A dragged tab window that merges back into Chrome fades out this fast, */
+const TAB_DRAG_CLOSE_FADE_MS = 150;
+/** ... shrinking by this share of its size. */
+const TAB_DRAG_CLOSE_SHRINK = 0.15;
+/** A dragged-out tab window stays hidden this long while Chrome draws it, */
+const TAB_DRAG_OPEN_HIDDEN_MS = 120;
+/** ... then fades in this fast. */
+const TAB_DRAG_OPEN_FADE_MS = 150;
 
 /**
  * Windows that always float, also on a tiled workspace:
@@ -8212,8 +8218,25 @@ function withManagedWindowOnlySSDRebuildSuppressed<T>(
 
 function scheduleOpenAnimation(window: WaylandWindow): void {
   if (isClientDrag(window)) {
-    // A tab dragged out of Chrome: the window is already under the pointer
-    // and follows it, so it just appears.
+    // A tab dragged out of Chrome: Chrome's first frames still have the old
+    // window's size and flash. Stay hidden while it draws the miniature,
+    // then fade in under the pointer.
+    window.scheduleAnimation({
+      channel: OPEN_ANIMATION_CHANNEL,
+      opacity: { from: 0, to: 0, duration: TAB_DRAG_OPEN_HIDDEN_MS, mode: "multiply" },
+    });
+    setTimeout(() => {
+      window.scheduleAnimation({
+        channel: OPEN_ANIMATION_CHANNEL,
+        opacity: {
+          from: 0,
+          to: 1,
+          duration: TAB_DRAG_OPEN_FADE_MS,
+          easing: WINDOW_OPEN_EASING,
+          mode: "multiply",
+        },
+      });
+    }, TAB_DRAG_OPEN_HIDDEN_MS);
     return;
   }
   if (!window.isTransient()) {
@@ -8245,9 +8268,19 @@ function scheduleOpenAnimation(window: WaylandWindow): void {
 function scheduleCloseAnimation(window: WaylandWindow): void {
   if (isClientDrag(window)) {
     // A dragged tab window dropped back into Chrome: its tab merges into the
-    // other window, so a short fade, not the lamp.
+    // other window, so it shrinks a little to its middle and fades, not the
+    // lamp.
+    const rect = window.rect;
+    const shrinkX = read(rect.width) * TAB_DRAG_CLOSE_SHRINK;
+    const shrinkY = read(rect.height) * TAB_DRAG_CLOSE_SHRINK;
     window.scheduleAnimation({
       channel: CLOSE_ANIMATION_CHANNEL,
+      rect: {
+        from: { x: 0, y: 0, width: 0, height: 0 },
+        to: { x: shrinkX / 2, y: shrinkY / 2, width: -shrinkX, height: -shrinkY },
+        duration: TAB_DRAG_CLOSE_FADE_MS,
+        mode: "add",
+      },
       opacity: { from: 1, to: 0, duration: TAB_DRAG_CLOSE_FADE_MS, mode: "multiply" },
     });
     window.setCloseAnimationDuration(TAB_DRAG_CLOSE_FADE_MS);

@@ -321,14 +321,29 @@ export function dropTarget(
     const across = (x - rect.x) / rect.width;
     const down = (y - rect.y) / rect.height;
     if (id === anchorId && down < 0.5) {
-      // Still over the upper half of the window the drag left: nothing
-      // changes until the pointer leaves it, except at a side that is the
-      // screen's edge: there a new column opens, as on any window.
-      if (across < DROP_EDGE && rect.x <= area.x + 1) {
+      // The upper half of the window the drag left changes nothing, except:
+      // at a side on the screen's edge, its strip opens a column there; at a
+      // side next to another window, the pointer over the place the new
+      // column would take (with 2/3 | 1/3, from 1/3 of the screen on).
+      const atLeftEdge = rect.x <= area.x + 1;
+      const atRightEdge = rect.x + rect.width >= area.x + area.width - 1;
+      if (across < DROP_EDGE && atLeftEdge) {
         return { targetId: id, side: "left" };
       }
-      if (across > 1 - DROP_EDGE && rect.x + rect.width >= area.x + area.width - 1) {
+      if (across > 1 - DROP_EDGE && atRightEdge) {
         return { targetId: id, side: "right" };
+      }
+      const base = remove(tree, dragId);
+      for (const side of ["left", "right"] as const) {
+        if (side === "left" ? atLeftEdge : atRightEdge) {
+          continue;
+        }
+        const cell = layout(moveBeside(base, dragId, id, side, area, gap), area, gap).get(
+          dragId,
+        );
+        if (cell && x >= cell.x && x < cell.x + cell.width) {
+          return { targetId: id, side };
+        }
       }
       return { targetId: id, side: null };
     }
