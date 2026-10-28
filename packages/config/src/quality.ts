@@ -16,10 +16,16 @@ export const QUALITY_FULL = 0;
 export const QUALITY_LIGHT = 1;
 export const QUALITY_MINIMAL = 2;
 
-/** How many recent animation frames decide. */
-const WINDOW_FRAMES = 90;
+/**
+ * How many recent animation frames decide: about 2 s at 144 Hz. Late frames
+ * come in bunches when a window opens (first paint, a layout change, the
+ * lamp starting at once). Over 90 frames one bunch of five crossed the limit
+ * on a fast GPU and switched the wobble off; a slow PC is late all the time
+ * and still steps down.
+ */
+const WINDOW_FRAMES = 300;
 /** Fewer frames than this decide nothing yet. */
-const MIN_FRAMES = 45;
+const MIN_FRAMES = 150;
 /** A frame is late when it takes this many normal frame times or more. */
 const LATE_FACTOR = 1.5;
 /** More late frames than this share lowers the quality. */
