@@ -52,6 +52,10 @@ pub struct WaylandWindowSnapshot {
     /// set one. A config's minimize animation can fly the window there.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub minimized_geometry: Option<WindowPositionSnapshot>,
+    /// An X11 window that opened while the left button was held: a tab
+    /// window Chrome is dragging out (see `ShojiWM::client_drag_surfaces`).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub client_drag: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
@@ -925,6 +929,9 @@ impl ShojiWM {
             interaction: DecorationInteractionSnapshot::default(),
             plasma: crate::protocols::plasma_shell::plasma_surface_snapshot(toplevel.wl_surface()),
             minimized_geometry: self.plasma_minimized_geometry(window),
+            client_drag: self
+                .client_drag_surfaces
+                .contains(&toplevel.wl_surface().id()),
         }
     }
 
@@ -951,6 +958,7 @@ impl ShojiWM {
                 interaction: DecorationInteractionSnapshot::default(),
                 plasma: None,
                 minimized_geometry: None,
+                client_drag: false,
             };
         };
 
@@ -1028,6 +1036,7 @@ impl ShojiWM {
             interaction: DecorationInteractionSnapshot::default(),
             plasma: None,
             minimized_geometry: self.plasma_minimized_geometry(window),
+            client_drag: false,
         }
     }
 

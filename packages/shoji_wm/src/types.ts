@@ -22,6 +22,8 @@ export interface WaylandWindowSnapshot {
   readonly plasma?: PlasmaSurfaceState;
   /** The window's taskbar entry (global logical px), from KDE's `set_minimized_geometry`. / KDE の `set_minimized_geometry` によるタスクバー上の位置（グローバル論理 px）。 */
   readonly minimizedGeometry?: WindowPosition;
+  /** `true` for an X11 window that opened while the left button was held: a tab window Chrome is dragging out. / 左ボタンを押したまま開いた X11 ウィンドウ（Chrome がドラッグで切り出したタブ）のとき `true`。 */
+  readonly clientDrag?: boolean;
 }
 
 /** The `role` of KDE's `org_kde_plasma_surface.set_role`. / KDE の `org_kde_plasma_surface.set_role` の役割。 */
@@ -241,6 +243,8 @@ export interface WaylandWindow {
   readonly isResizable: import("./signals").ReadonlySignal<boolean>;
   /** `true` for child windows (dialogs, etc.) that are transient for another toplevel. / 別のトップレベルに対してトランジェントな子ウィンドウ（ダイアログ等）のとき `true`。 */
   readonly isTransient: import("./signals").ReadonlySignal<boolean>;
+  /** `true` for an X11 window that opened while the left button was held: a tab window Chrome is dragging out. / 左ボタンを押したまま開いた X11 ウィンドウ（Chrome がドラッグで切り出したタブ）のとき `true`。 */
+  readonly clientDrag: import("./signals").ReadonlySignal<boolean>;
   /** `id` of the parent window if this is a transient, otherwise `undefined`. / トランジェントの場合は親ウィンドウの `id`、そうでない場合は `undefined`。 */
   readonly parentId: import("./signals").ReadonlySignal<string | undefined>;
   /**
@@ -3332,6 +3336,7 @@ export interface ReactiveWaylandWindowSignals {
   sizeConstraints: import("./signals").ReadonlySignal<WindowSizeConstraints>;
   isResizable: import("./signals").ReadonlySignal<boolean>;
   isTransient: import("./signals").ReadonlySignal<boolean>;
+  clientDrag: import("./signals").ReadonlySignal<boolean>;
   parentId: import("./signals").ReadonlySignal<string | undefined>;
   plasma: import("./signals").ReadonlySignal<PlasmaSurfaceState | undefined>;
   minimizedGeometry: import("./signals").ReadonlySignal<WindowPosition | undefined>;

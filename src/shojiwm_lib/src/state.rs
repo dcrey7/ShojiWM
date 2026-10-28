@@ -504,6 +504,15 @@ pub struct ShojiWM {
     pub tap_pressed_keys: std::collections::HashMap<u32, u32>,
     pub tap_armed_modifier: Option<crate::runtime_key_binding::ModifierClass>,
     pub tap_interrupted: bool,
+    /// Whether the left pointer button is down now.
+    pub left_button_held: bool,
+    /// An X11 client moving its own window (see `crate::client_move`).
+    pub client_move: Option<crate::client_move::ClientMove>,
+    /// X11 toplevels that appeared while the left button was held: Chrome's
+    /// dragged-out tab windows. The config floats them and skips their Magic
+    /// Lamp (`clientDrag` on the window snapshot).
+    pub client_drag_surfaces:
+        std::collections::HashSet<smithay::reexports::wayland_server::backend::ObjectId>,
     /// Event time (ms) the tap modifier was pressed, for `within`.
     pub tap_armed_at: u32,
     pub pending_tap_binding_ids: Vec<String>,
@@ -1871,6 +1880,9 @@ impl ShojiWM {
             tap_pressed_keys: std::collections::HashMap::new(),
             tap_armed_modifier: None,
             tap_interrupted: false,
+            left_button_held: false,
+            client_move: None,
+            client_drag_surfaces: std::collections::HashSet::new(),
             tap_armed_at: 0,
             pending_tap_binding_ids: Vec::new(),
             suggested_window_offset: None,
@@ -2271,6 +2283,14 @@ impl ShojiWM {
                 {
                     embedded.mark_ready();
                 }
+            }
+            SatelliteEvent::MoveRequest {
+                generation,
+                surface_id,
+                x,
+                y,
+            } if Some(generation) == current => {
+                self.x11_client_move_request(surface_id, x, y);
             }
             SatelliteEvent::Exited {
                 generation,
@@ -3097,6 +3117,7 @@ impl ShojiWM {
             output_name: None,
             plasma: None,
             minimized_geometry: None,
+            client_drag: false,
             id: "__warmup__".into(),
             title: "warmup".into(),
             app_id: Some("shoji_wm.warmup".into()),

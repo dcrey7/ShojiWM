@@ -595,6 +595,14 @@ impl XState {
                         if mask.contains(x::ConfigWindowMask::Y) {
                             list.push(x::ConfigWindow::Y(e.y().into()));
                         }
+                    } else if mask.intersects(x::ConfigWindowMask::X | x::ConfigWindowMask::Y) {
+                        // A mapped toplevel asks to move: the compositor
+                        // decides, so pass the request on.
+                        server_state.forward_move_request(
+                            e.window(),
+                            mask.contains(x::ConfigWindowMask::X).then(|| e.x().into()),
+                            mask.contains(x::ConfigWindowMask::Y).then(|| e.y().into()),
+                        );
                     }
                     if mask.contains(x::ConfigWindowMask::WIDTH) {
                         list.push(x::ConfigWindow::Width(e.width().into()));

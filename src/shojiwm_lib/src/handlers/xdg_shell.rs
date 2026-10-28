@@ -127,6 +127,11 @@ impl XdgShellHandler for ShojiWM {
                 .get_data::<crate::state::ClientState>()
                 .is_some_and(|data| data.xwayland_refresh_override)
         });
+        // An X11 window that opens while the left button is held is a tab
+        // Chrome is dragging out; mark it before the first snapshot.
+        if uses_xwayland_refresh_override && self.left_button_held {
+            self.client_drag_surfaces.insert(surface_id.clone());
+        }
         let window = Window::new_wayland_window(surface);
         let snapshot = self.snapshot_window(&window);
         let initial_location = match self.suggested_window_location(&snapshot) {
@@ -202,6 +207,8 @@ impl XdgShellHandler for ShojiWM {
                 .is_some_and(|data| data.xwayland_refresh_override)
         }) {
             crate::xwayland_satellite::forget_x11_window_position(wl_surface.id().protocol_id());
+            self.client_drag_surfaces.remove(&wl_surface.id());
+            self.forget_client_move(wl_surface);
         }
         let Some(window) = self
             .space

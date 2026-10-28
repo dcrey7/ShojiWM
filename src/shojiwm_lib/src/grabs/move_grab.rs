@@ -364,14 +364,14 @@ fn move_rect_for_delta(
     }
 }
 
-fn point_snapshot(point: Point<f64, Logical>) -> WindowResizePointSnapshot {
+pub(crate) fn point_snapshot(point: Point<f64, Logical>) -> WindowResizePointSnapshot {
     WindowResizePointSnapshot {
         x: point.x,
         y: point.y,
     }
 }
 
-fn rect_snapshot(rect: smithay::utils::Rectangle<i32, Logical>) -> WindowPositionSnapshot {
+pub(crate) fn rect_snapshot(rect: smithay::utils::Rectangle<i32, Logical>) -> WindowPositionSnapshot {
     WindowPositionSnapshot {
         x: rect.loc.x as f64,
         y: rect.loc.y as f64,

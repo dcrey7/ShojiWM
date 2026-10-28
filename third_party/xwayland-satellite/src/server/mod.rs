@@ -1170,6 +1170,36 @@ impl<S: X11Selection + 'static> InnerServerState<S> {
         self.world.insert(id, (SurfaceSerial(serial),)).unwrap();
     }
 
+    /// Hand a mapped toplevel's move request to the compositor (see
+    /// `crate::window_positions::set_move_request_sink`). A missing x or y
+    /// keeps the window's current one.
+    pub fn forward_move_request(&self, window: x::Window, x: Option<i32>, y: Option<i32>) {
+        let Some(entity) = self.windows.get(&window).copied() else {
+            return;
+        };
+        let Ok(mut query) = self.world.query_one::<(
+            &WindowData,
+            &client::wl_surface::WlSurface,
+            &SurfaceRole,
+            &SurfaceScaleFactor,
+        )>(entity) else {
+            return;
+        };
+        let Some((data, surface, role, scale)) = query.get() else {
+            return;
+        };
+        if !matches!(role, SurfaceRole::Toplevel(Some(_))) {
+            return;
+        }
+        let x = x.unwrap_or(data.attrs.dims.x as i32);
+        let y = y.unwrap_or(data.attrs.dims.y as i32);
+        crate::window_positions::request_move(
+            surface.id().protocol_id(),
+            (x as f64 / scale.0).round() as i32,
+            (y as f64 / scale.0).round() as i32,
+        );
+    }
+
     pub fn can_change_position(&self, window: x::Window) -> bool {
         let Some(win) = self
             .windows

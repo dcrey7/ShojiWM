@@ -176,6 +176,14 @@ pub enum SatelliteEvent {
     },
     /// The satellite thread ended: Xwayland exited, or satellite panicked.
     Exited { generation: u64, panicked: bool },
+    /// An X11 toplevel asked to move its window there. `surface_id`, `x` and
+    /// `y` mean the same as in `publish_x11_window_position`.
+    MoveRequest {
+        generation: u64,
+        surface_id: u32,
+        x: i32,
+        y: i32,
+    },
 }
 
 /// Delay before the first restart after a quick failure.
@@ -243,6 +251,19 @@ impl EmbeddedSatellite {
                 None
             }
         };
+        // X11 toplevels that move themselves (Chrome's dragged tab window)
+        // reach the event loop as `SatelliteEvent::MoveRequest`.
+        let move_events = self.events.clone();
+        satellite::window_positions::set_move_request_sink(Some(Box::new(
+            move |surface_id, x, y| {
+                let _ = move_events.send(SatelliteEvent::MoveRequest {
+                    generation,
+                    surface_id,
+                    x,
+                    y,
+                });
+            },
+        )));
         let data = EmbeddedRunData {
             display: self.display_name.clone(),
             listenfds: Mutex::new(listenfds),

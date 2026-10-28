@@ -176,6 +176,8 @@ export const WINDOW_STATE_SNAP_MONITOR = createWindowState<string | null>(
 const OPEN_CLOSE_ANIMATION_DURATION = seconds(0.5);
 /** The close lamp's run plus a little slack, so the snapshot outlives it. */
 const CLOSE_LAMP_SLACK_MS = 120;
+/** A dragged tab window that merges back into Chrome fades out this fast. */
+const TAB_DRAG_CLOSE_FADE_MS = 120;
 
 /**
  * Windows that always float, also on a tiled workspace:
@@ -191,11 +193,23 @@ const ALWAYS_FLOAT_APP_IDS = new Set([
   "org.kde.plasma.emojier",
 ]);
 
-/** The window can be a tile: resizable, not a child window, not a dialog. */
+/**
+ * A tab window Chrome is dragging out (`clientDrag`). An older runtime has no
+ * such signal, so its windows read as not dragged.
+ */
+function isClientDrag(window: WaylandWindow): boolean {
+  return window.clientDrag?.peek() ?? false;
+}
+
+/**
+ * The window can be a tile: resizable, not a child window, not a dialog, and
+ * not a tab window Chrome is dragging out (it follows the pointer instead).
+ */
 export function isTileable(window: WaylandWindow): boolean {
   return (
     window.isResizable.peek() &&
     !window.isTransient.peek() &&
+    !isClientDrag(window) &&
     !ALWAYS_FLOAT_APP_IDS.has(window.appId.peek() ?? "")
   );
 }
@@ -7986,6 +8000,11 @@ function withManagedWindowOnlySSDRebuildSuppressed<T>(
 // opacity is already 0 can still fade back in deterministically.
 
 function scheduleOpenAnimation(window: WaylandWindow): void {
+  if (isClientDrag(window)) {
+    // A tab dragged out of Chrome: the window is already under the pointer
+    // and follows it, so it just appears.
+    return;
+  }
   if (!window.isTransient()) {
     // An app window pours out of its taskbar icon, like a restore (the
     // Magic Lamp backwards). Not KWin, which glides new windows in.
@@ -8013,6 +8032,16 @@ function scheduleOpenAnimation(window: WaylandWindow): void {
 }
 
 function scheduleCloseAnimation(window: WaylandWindow): void {
+  if (isClientDrag(window)) {
+    // A dragged tab window dropped back into Chrome: its tab merges into the
+    // other window, so a short fade, not the lamp.
+    window.scheduleAnimation({
+      channel: CLOSE_ANIMATION_CHANNEL,
+      opacity: { from: 1, to: 0, duration: TAB_DRAG_CLOSE_FADE_MS, mode: "multiply" },
+    });
+    window.setCloseAnimationDuration(TAB_DRAG_CLOSE_FADE_MS);
+    return;
+  }
   // The window pours into its taskbar icon, like a minimize (Magic Lamp).
   // When the lamp is done, the window stays hidden until the snapshot goes.
   const lampMs = magicLampStart(window, true, () => {

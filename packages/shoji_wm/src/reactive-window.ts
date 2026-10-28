@@ -39,6 +39,7 @@ interface MutableWindowSignals {
   sizeConstraints: Signal<WindowSizeConstraints>;
   isResizable: Signal<boolean>;
   isTransient: Signal<boolean>;
+  clientDrag: Signal<boolean>;
   parentId: Signal<string | undefined>;
   plasma: Signal<PlasmaSurfaceState | undefined>;
   minimizedGeometry: Signal<WindowPosition | undefined>;
@@ -78,6 +79,7 @@ export function createReactiveWindow(
     sizeConstraints: signal(snapshot.sizeConstraints),
     isResizable: signal(snapshot.isResizable),
     isTransient: signal(snapshot.isTransient),
+    clientDrag: signal(snapshot.clientDrag ?? false),
     parentId: signal(snapshot.parentId),
     plasma: signal(snapshot.plasma),
     minimizedGeometry: signal(snapshot.minimizedGeometry),
@@ -180,6 +182,7 @@ export function createReactiveWindow(
     sizeConstraints: signals.sizeConstraints,
     isResizable: signals.isResizable,
     isTransient: signals.isTransient,
+    clientDrag: signals.clientDrag,
     parentId: signals.parentId,
     plasma: signals.plasma,
     minimizedGeometry: signals.minimizedGeometry,
@@ -235,6 +238,7 @@ export function createReactiveWindow(
         signals.isXwayland.value = nextSnapshot.isXwayland;
         signals.isResizable.value = nextSnapshot.isResizable;
         signals.isTransient.value = nextSnapshot.isTransient;
+        signals.clientDrag.value = nextSnapshot.clientDrag ?? false;
         signals.parentId.value = nextSnapshot.parentId;
         signals.output.value = nextSnapshot.outputName;
         // Object fields: every snapshot from Rust deserializes to a *new*

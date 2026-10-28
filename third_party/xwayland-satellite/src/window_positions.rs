@@ -32,3 +32,22 @@ pub fn remove(surface_id: u32) {
 pub(crate) fn snapshot() -> HashMap<u32, (i32, i32)> {
     POSITIONS.lock().unwrap().clone()
 }
+
+/// Receives a toplevel's own move request: (surface id, x, y), in the same
+/// units and origin as `set`.
+pub type MoveRequestSink = Box<dyn Fn(u32, i32, i32) + Send>;
+
+static MOVE_REQUESTS: Mutex<Option<MoveRequestSink>> = Mutex::new(None);
+
+/// Let the compositor hear X11 toplevels asking to move. Chrome moves a
+/// dragged-out tab window itself this way; a Wayland client cannot place its
+/// own window, so the compositor decides. `None` stops forwarding.
+pub fn set_move_request_sink(sink: Option<MoveRequestSink>) {
+    *MOVE_REQUESTS.lock().unwrap() = sink;
+}
+
+pub(crate) fn request_move(surface_id: u32, x: i32, y: i32) {
+    if let Some(sink) = MOVE_REQUESTS.lock().unwrap().as_ref() {
+        sink(surface_id, x, y);
+    }
+}

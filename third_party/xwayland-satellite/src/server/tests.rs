@@ -2399,6 +2399,27 @@ fn reconfigure_toplevel() {
     f.assert_window_dimensions(toplevel, surface, final_dims);
 }
 
+#[test]
+fn toplevel_move_request_goes_to_the_compositor() {
+    let (mut f, comp) = TestFixture::new_with_compositor();
+    let toplevel = Window::new(1);
+    f.create_toplevel(&comp, toplevel);
+
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = seen.clone();
+    crate::window_positions::set_move_request_sink(Some(Box::new(move |_, x, y| {
+        sink.lock().unwrap().push((x, y));
+    })));
+    // A mapped toplevel cannot place itself; satellite passes the request on.
+    // Only x is asked for, so y stays the window's own. 7331 marks this
+    // test's request: the sink is global and tests run in parallel.
+    assert!(!f.satellite.can_change_position(toplevel));
+    f.satellite.forward_move_request(toplevel, Some(7331), None);
+    crate::window_positions::set_move_request_sink(None);
+
+    assert!(seen.lock().unwrap().contains(&(7331, 0)));
+}
+
 type EventMatcher<'a, Event> = Box<dyn FnMut(&Event) -> bool + 'a>;
 #[track_caller]
 fn events_check<Event: std::fmt::Debug, const N: usize>(

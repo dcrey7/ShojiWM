@@ -1458,8 +1458,12 @@ impl ShojiWM {
                         "process-input-event",
                     );
                 }
+                if button == 272 {
+                    self.left_button_held = button_state == ButtonState::Pressed;
+                }
                 if button == 272 && button_state == ButtonState::Released {
                     self.release_decoration_active_target();
+                    self.end_client_move();
                 }
 
                 if self.session_lock_active {

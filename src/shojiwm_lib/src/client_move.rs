@@ -1,0 +1,225 @@
+//! Moves that an X11 client drives itself.
+//!
+//! Chrome on X11 moves a dragged-out tab window on its own: it keeps the
+//! pointer, and on every motion it asks the window manager to put the window
+//! under the cursor. It must keep the pointer to see the tab strip it is
+//! dropped on, so ShojiWM cannot start its own move grab. Instead each request
+//! (`SatelliteEvent::MoveRequest`) becomes the same window move event a title
+//! bar drag sends, so the config moves the window and plays the jelly drag.
+//! The move ends when the left button comes up.
+
+use crate::{
+    grabs::move_grab::{point_snapshot, rect_snapshot},
+    ssd::{
+        PointerModifierStateSnapshot, WindowMoveEventSnapshot, WindowMovePhaseSnapshot,
+        WindowMoveSourceSnapshot, WindowPositionSnapshot,
+    },
+    state::{ClientState, ShojiWM},
+};
+use smithay::{
+    desktop::Window,
+    reexports::wayland_server::{protocol::wl_surface::WlSurface, Resource},
+    utils::{Logical, Point, Rectangle},
+};
+
+/// One client-driven move, from the first request to the button release.
+pub struct ClientMove {
+    window: Window,
+    /// The window's frame (decorations included) when the move started.
+    start_rect: Rectangle<i32, Logical>,
+    /// Where the client area was when the move started; requests are for the
+    /// client area, the move event is for the frame.
+    start_client: Point<i32, Logical>,
+    start_pointer: Point<f64, Logical>,
+    last_rect: WindowPositionSnapshot,
+}
+
+/// True for a surface of the embedded xwayland-satellite, i.e. an X11 window.
+pub fn is_satellite_surface(surface: &WlSurface) -> bool {
+    surface.client().is_some_and(|client| {
+        client
+            .get_data::<ClientState>()
+            .is_some_and(|data| data.xwayland_refresh_override)
+    })
+}
+
+impl ShojiWM {
+    /// An X11 toplevel asked to be at `x`/`y` (logical, from the top-left
+    /// corner of all outputs). Honoured only while the left button is held,
+    /// which is when Chrome drags a tab window; at other times X11 windows stay
+    /// where the layout puts them.
+    pub fn x11_client_move_request(&mut self, surface_id: u32, x: i32, y: i32) {
+        if !self.left_button_held {
+            return;
+        }
+        let Some(window) = self.satellite_window(surface_id) else {
+            return;
+        };
+        let Some(origin) = self.outputs_origin() else {
+            return;
+        };
+        let requested = Point::<i32, Logical>::from((x + origin.x, y + origin.y));
+
+        if self
+            .client_move
+            .as_ref()
+            .is_some_and(|client_move| client_move.window != window)
+        {
+            self.end_client_move();
+        }
+        if self.client_move.is_none() && !self.start_client_move(window) {
+            return;
+        }
+        self.update_client_move(requested);
+    }
+
+    /// The left button came up: finish the client-driven move, if any.
+    pub fn end_client_move(&mut self) {
+        let Some(client_move) = self.client_move.take() else {
+            return;
+        };
+        let pointer = self.pointer_location();
+        let event = self.client_move_event(
+            &client_move,
+            WindowMovePhaseSnapshot::End,
+            client_move.last_rect.clone(),
+            pointer,
+        );
+        self.send_client_move_event(&client_move.window, &event);
+    }
+
+    /// A window is gone: drop its move without an event, the close handles it.
+    pub fn forget_client_move(&mut self, surface: &WlSurface) {
+        if self.client_move.as_ref().is_some_and(|client_move| {
+            client_move
+                .window
+                .toplevel()
+                .is_some_and(|toplevel| toplevel.wl_surface() == surface)
+        }) {
+            self.client_move = None;
+        }
+    }
+
+    fn start_client_move(&mut self, window: Window) -> bool {
+        let Some(decoration) = self.window_decorations.get(&window) else {
+            return false;
+        };
+        let root = decoration.layout.root.rect;
+        let client = decoration.client_rect;
+        let client_move = ClientMove {
+            window: window.clone(),
+            start_rect: Rectangle::new((root.x, root.y).into(), (root.width, root.height).into()),
+            start_client: (client.x, client.y).into(),
+            start_pointer: self.pointer_location(),
+            last_rect: rect_snapshot(Rectangle::new(
+                (root.x, root.y).into(),
+                (root.width, root.height).into(),
+            )),
+        };
+        let event = self.client_move_event(
+            &client_move,
+            WindowMovePhaseSnapshot::Start,
+            client_move.last_rect.clone(),
+            client_move.start_pointer,
+        );
+        if !self.send_client_move_event(&window, &event) {
+            // No config handles moves: nothing to do.
+            return false;
+        }
+        self.client_move = Some(client_move);
+        true
+    }
+
+    fn update_client_move(&mut self, requested: Point<i32, Logical>) {
+        let pointer = self.pointer_location();
+        let Some(client_move) = self.client_move.as_mut() else {
+            return;
+        };
+        let delta = requested - client_move.start_client;
+        let rect = WindowPositionSnapshot {
+            x: (client_move.start_rect.loc.x + delta.x) as f64,
+            y: (client_move.start_rect.loc.y + delta.y) as f64,
+            width: client_move.start_rect.size.w as f64,
+            height: client_move.start_rect.size.h as f64,
+        };
+        if rect == client_move.last_rect {
+            return;
+        }
+        client_move.last_rect = rect.clone();
+        let window = client_move.window.clone();
+        let client_move = self.client_move.as_ref().unwrap();
+        let event =
+            self.client_move_event(client_move, WindowMovePhaseSnapshot::Update, rect, pointer);
+        self.send_client_move_event(&window, &event);
+    }
+
+    fn client_move_event(
+        &self,
+        client_move: &ClientMove,
+        phase: WindowMovePhaseSnapshot,
+        current_rect: WindowPositionSnapshot,
+        pointer: Point<f64, Logical>,
+    ) -> WindowMoveEventSnapshot {
+        let output_name = self
+            .space
+            .outputs()
+            .find(|output| {
+                self.space
+                    .output_geometry(output)
+                    .is_some_and(|geometry| geometry.contains(pointer.to_i32_floor()))
+            })
+            .map(|output| output.name());
+        WindowMoveEventSnapshot {
+            // The client asked for the move, like `xdg_toplevel.move`.
+            source: WindowMoveSourceSnapshot::ClientCsd,
+            phase,
+            start_pointer: point_snapshot(client_move.start_pointer),
+            current_pointer: point_snapshot(pointer),
+            delta: point_snapshot(pointer - client_move.start_pointer),
+            start_rect: rect_snapshot(client_move.start_rect),
+            current_rect,
+            output_name,
+            modifiers: PointerModifierStateSnapshot {
+                logo: self.current_keyboard_modifiers.logo,
+                alt: self.current_keyboard_modifiers.alt,
+                ctrl: self.current_keyboard_modifiers.ctrl,
+                shift: self.current_keyboard_modifiers.shift,
+            },
+            timestamp: std::time::Duration::from(self.clock.now()).as_millis() as u64,
+        }
+    }
+
+    fn send_client_move_event(&mut self, window: &Window, event: &WindowMoveEventSnapshot) -> bool {
+        let window_id = self.snapshot_window(window).id;
+        let now_ms = std::time::Duration::from(self.clock.now()).as_millis() as u64;
+        self.invoke_window_move_event(&window_id, event, now_ms)
+    }
+
+    fn satellite_window(&self, surface_id: u32) -> Option<Window> {
+        self.space
+            .elements()
+            .find(|window| {
+                window.toplevel().is_some_and(|toplevel| {
+                    let surface = toplevel.wl_surface();
+                    surface.id().protocol_id() == surface_id && is_satellite_surface(surface)
+                })
+            })
+            .cloned()
+    }
+
+    /// The top-left corner of the box around all outputs (X11's origin).
+    pub fn outputs_origin(&self) -> Option<Point<i32, Logical>> {
+        self.space
+            .outputs()
+            .filter_map(|output| self.space.output_geometry(output))
+            .map(|geometry| geometry.loc)
+            .reduce(|a, b| (a.x.min(b.x), a.y.min(b.y)).into())
+    }
+
+    fn pointer_location(&self) -> Point<f64, Logical> {
+        self.seat
+            .get_pointer()
+            .map(|pointer| pointer.current_location())
+            .unwrap_or_default()
+    }
+}
