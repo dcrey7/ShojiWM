@@ -277,6 +277,85 @@ export function canInsert(
   return fitsMinSize(next, context.area, context.gap, limits);
 }
 
+/**
+ * Dragging a window over another one: nearer the left or right edge than this
+ * (share of the width) puts it beside; otherwise above or below.
+ */
+const DROP_EDGE = 0.25;
+
+/**
+ * Where a dragged window `dragId` lands for the pointer at `x`/`y`: the
+ * window under the pointer and the side of it. Null over the dragged
+ * window's own cell, a gap, or nothing.
+ */
+export function dropTarget(
+  tree: TileTree,
+  dragId: string,
+  x: number,
+  y: number,
+  area: TileRect,
+  gap: number,
+): { targetId: string; side: TileDirection } | null {
+  for (const [id, rect] of layout(tree, area, gap)) {
+    if (
+      id === dragId ||
+      x < rect.x ||
+      x >= rect.x + rect.width ||
+      y < rect.y ||
+      y >= rect.y + rect.height
+    ) {
+      continue;
+    }
+    const across = (x - rect.x) / rect.width;
+    const down = (y - rect.y) / rect.height;
+    const side: TileDirection =
+      across < DROP_EDGE
+        ? "left"
+        : across > 1 - DROP_EDGE
+          ? "right"
+          : down < 0.5
+            ? "up"
+            : "down";
+    return { targetId: id, side };
+  }
+  return null;
+}
+
+/**
+ * Take `id` out and put it on `side` of `targetId`, in half of the target's
+ * cell. The tree stays as it was when `id` or `targetId` is missing, or a
+ * window would get under the minimum size.
+ */
+export function moveBeside(
+  tree: TileTree,
+  id: string,
+  targetId: string,
+  side: TileDirection,
+  area: TileRect,
+  gap: number,
+  limits: TileLimits = DEFAULT_TILE_LIMITS,
+): TileTree {
+  if (id === targetId || !hasLeaf(tree, id)) {
+    return tree;
+  }
+  const without = remove(tree, id);
+  if (!without || !hasLeaf(without, targetId)) {
+    return tree;
+  }
+  const moved: TileLeaf = { kind: "leaf", id };
+  const target: TileLeaf = { kind: "leaf", id: targetId };
+  const before = side === "left" || side === "up";
+  const split: TileSplit = {
+    kind: "split",
+    direction: side === "left" || side === "right" ? "row" : "column",
+    ratio: 0.5,
+    first: before ? moved : target,
+    second: before ? target : moved,
+  };
+  const next = replaceLeaf(without, targetId, split);
+  return fitsMinSize(next, area, gap, limits) ? next : tree;
+}
+
 /** Take the window `id` out. Its sibling takes the whole space of the split. */
 export function remove(tree: TileTree, id: string): TileTree {
   if (!tree) {

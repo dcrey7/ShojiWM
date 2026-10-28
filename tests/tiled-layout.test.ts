@@ -6,11 +6,13 @@ import {
   chooseLeafToSplit,
   cycleSoloShare,
   cycleWidthShare,
+  dropTarget,
   flip,
   insert,
   isStacked,
   layout,
   leafIds,
+  moveBeside,
   neighbour,
   remove,
   removeAndSettle,
@@ -195,6 +197,46 @@ test("swap trades the places of two windows", () => {
   assert.deepEqual(rects(swapped)[3], [0, 0, 1274, 714]);
   assert.deepEqual(rects(swapped)[1], [1286, 726, 1274, 714]);
   assert.deepEqual(leafIds(swapped), ["3", "4", "2", "1"]);
+});
+
+test("dropTarget: edges put a dragged window beside, the middle above or below", () => {
+  // 1 on the left, 2 (dragged) on the right.
+  const tree = open(WIDE, 2);
+  const target = (x: number, y: number) => dropTarget(tree, "2", x, y, WIDE, GAP);
+  assert.deepEqual(target(100, 700), { targetId: "1", side: "left" });
+  assert.deepEqual(target(1200, 700), { targetId: "1", side: "right" });
+  assert.deepEqual(target(640, 300), { targetId: "1", side: "up" });
+  assert.deepEqual(target(640, 1100), { targetId: "1", side: "down" });
+  // Over the dragged window's own cell, or the gap: no move.
+  assert.equal(target(2000, 700), null);
+  assert.equal(target(1280, 700), null);
+});
+
+test("moveBeside: a dragged window splits the window under the pointer", () => {
+  // Below 1: 1 and 2 share the left column, 3 keeps the right.
+  const below = moveBeside(open(WIDE, 3), "3", "1", "down", WIDE, GAP);
+  assert.deepEqual(rects(below), {
+    1: [0, 0, 1274, 714],
+    3: [0, 726, 1274, 714],
+    2: [1286, 0, 1274, 1440],
+  });
+  // Left of 1: a new column at the left edge.
+  const left = moveBeside(open(WIDE, 2), "2", "1", "left", WIDE, GAP);
+  assert.deepEqual(leafIds(left), ["2", "1"]);
+  // The pointer stays over the moved window's new cell, so the next
+  // dropTarget is null and the layout does not flip back and forth.
+  assert.equal(dropTarget(below, "3", 640, 1100, WIDE, GAP), null);
+});
+
+test("moveBeside keeps the tree when a window would get too small", () => {
+  // Two halves of 1366 px are 677 px wide, under a 700 px minimum.
+  const tree = open(SMALL, 2);
+  const next = moveBeside(tree, "2", "1", "left", SMALL, GAP, {
+    minWidth: 700,
+    minHeight: 300,
+    maxWindows: 4,
+  });
+  assert.equal(next, tree);
 });
 
 test("cycleWidthShare: Super+R steps the stack through 1/3, 1/2, 2/3", () => {

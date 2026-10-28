@@ -35,8 +35,10 @@ import {
   isStacked as isTileStacked,
   cycleSoloShare,
   cycleWidthShare,
+  dropTarget as tileDropTarget,
   layout as tileLayout,
   leafIds,
+  moveBeside as moveTileBeside,
   neighbour as tileNeighbour,
   removeAndSettle,
   resize as resizeTileSplit,
@@ -201,15 +203,11 @@ function isClientDrag(window: WaylandWindow): boolean {
   return window.clientDrag?.peek() ?? false;
 }
 
-/**
- * The window can be a tile: resizable, not a child window, not a dialog, and
- * not a tab window Chrome is dragging out (it follows the pointer instead).
- */
+/** The window can be a tile: resizable, not a child window, not a dialog. */
 export function isTileable(window: WaylandWindow): boolean {
   return (
     window.isResizable.peek() &&
     !window.isTransient.peek() &&
-    !isClientDrag(window) &&
     !ALWAYS_FLOAT_APP_IDS.has(window.appId.peek() ?? "")
   );
 }
@@ -1181,6 +1179,7 @@ export class HybridWindowManager {
 
   public onStartClose(window: WaylandWindow) {
     scheduleCloseAnimation(window);
+    this.forgetDragOf(window);
 
     for (const workspace of this.workspaces.values()) {
       const nextFocus = workspace.removeWindow(window);
@@ -1192,6 +1191,22 @@ export class HybridWindowManager {
       }
     }
     this.syncWorkspaceVisibility();
+  }
+
+  /**
+   * A window closed while it was dragged: Chrome merges a dragged-out tab
+   * back while the button is still down, so no move end comes.
+   */
+  private forgetDragOf(window: WaylandWindow) {
+    if (this.tileDrag?.window.id === window.id) {
+      this.emitSnapPreview(this.tileDrag.workspace.monitor, null, "tiling");
+      this.tileDrag = null;
+      this.isGrabbing = false;
+    }
+    if (this.floatingDrag?.window.id === window.id) {
+      this.floatingDrag = null;
+      this.isGrabbing = false;
+    }
   }
 
   /**
@@ -1469,6 +1484,7 @@ export class HybridWindowManager {
             window,
             nextRect,
             event.currentPointer.x,
+            event.currentPointer.y,
           );
           this.emitSnapPreview(
             targetWorkspace.monitor,
@@ -1570,6 +1586,7 @@ export class HybridWindowManager {
       window,
       event.currentRect,
       event.currentPointer.x,
+      event.currentPointer.y,
     );
     this.emitSnapPreview(
       targetWorkspace.monitor,
@@ -6321,15 +6338,20 @@ export class Workspace {
     window: WaylandWindow,
     rect: ManagedWindowRect,
     pointerX: number,
+    pointerY: number,
   ) {
     if (this.draggingWindowId !== window.id) {
       this.beginTileDrag(window, rect);
     }
     this.activeWindowId = window.id;
-    this.moveTileWindowToIndex(
-      window,
-      this.tileInsertionIndexForPointer(window, pointerX),
-    );
+    if (this.mode === "tiled") {
+      this.moveTreeTileToPointer(window, pointerX, pointerY);
+    } else {
+      this.moveTileWindowToIndex(
+        window,
+        this.tileInsertionIndexForPointer(window, pointerX),
+      );
+    }
     stopRectAnimation(window, WINDOW_STATE_RECT);
     window.state[WINDOW_STATE_RECT].set(rect);
     this.scrollToWindow(window);
@@ -7110,6 +7132,40 @@ export class Workspace {
 
   private activeWindow(windows = this.windows): WaylandWindow | undefined {
     return windows.find((window) => window.id === this.activeWindowId);
+  }
+
+  /**
+   * Tiled mode: the dragged tile's cell moves to the window under the
+   * pointer, on the side the pointer is nearest (see `dropTarget`). The
+   * others make room at once; the drop keeps the new place.
+   */
+  private moveTreeTileToPointer(
+    window: WaylandWindow,
+    pointerX: number,
+    pointerY: number,
+  ) {
+    if (!hasLeaf(this.tree, window.id)) {
+      return;
+    }
+    const area = plainRect(this.tileViewportRect());
+    const target = tileDropTarget(
+      this.tree,
+      window.id,
+      pointerX,
+      pointerY,
+      area,
+      TILE_GAP,
+    );
+    if (target) {
+      this.tree = moveTileBeside(
+        this.tree,
+        window.id,
+        target.targetId,
+        target.side,
+        area,
+        TILE_GAP,
+      );
+    }
   }
 
   private tileInsertionIndexForPointer(
