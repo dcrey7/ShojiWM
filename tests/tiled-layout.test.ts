@@ -200,32 +200,42 @@ test("swap trades the places of two windows", () => {
 });
 
 test("dropTarget: edges put a dragged window beside, the middle above or below", () => {
-  // 1 on the left, 2 (dragged) on the right.
+  // 1 on the left, 2 (dragged) on the right. Without 2, 1 fills the screen.
   const tree = open(WIDE, 2);
   const target = (x: number, y: number) => dropTarget(tree, "2", x, y, WIDE, GAP);
   assert.deepEqual(target(100, 700), { targetId: "1", side: "left" });
-  assert.deepEqual(target(1200, 700), { targetId: "1", side: "right" });
-  assert.deepEqual(target(640, 300), { targetId: "1", side: "up" });
-  assert.deepEqual(target(640, 1100), { targetId: "1", side: "down" });
-  // Over the dragged window's own cell, or the gap: no move.
-  assert.equal(target(2000, 700), null);
-  assert.equal(target(1280, 700), null);
+  assert.deepEqual(target(2400, 700), { targetId: "1", side: "right" });
+  assert.deepEqual(target(1280, 300), { targetId: "1", side: "up" });
+  assert.deepEqual(target(1280, 1100), { targetId: "1", side: "down" });
+});
+
+test("dropTarget rightOrDown: the window under the pointer stays, the tab goes right or below", () => {
+  const tree = open(WIDE, 2);
+  const target = (x: number, y: number) =>
+    dropTarget(tree, "2", x, y, WIDE, GAP, "rightOrDown");
+  // Pulled out at the tab strip: right.
+  assert.deepEqual(target(1280, 60), { targetId: "1", side: "right" });
+  // Dragged down: below. Never left or up.
+  assert.deepEqual(target(1280, 1100), { targetId: "1", side: "down" });
+  assert.deepEqual(target(100, 700), { targetId: "1", side: "down" });
+  assert.deepEqual(target(2400, 100), { targetId: "1", side: "right" });
 });
 
 test("moveBeside: a dragged window splits the window under the pointer", () => {
-  // Below 1: 1 and 2 share the left column, 3 keeps the right.
+  // Below 1: 1 and 3 share the left column, 2 keeps the right.
   const below = moveBeside(open(WIDE, 3), "3", "1", "down", WIDE, GAP);
   assert.deepEqual(rects(below), {
     1: [0, 0, 1274, 714],
     3: [0, 726, 1274, 714],
     2: [1286, 0, 1274, 1440],
   });
-  // Left of 1: a new column at the left edge.
-  const left = moveBeside(open(WIDE, 2), "2", "1", "left", WIDE, GAP);
-  assert.deepEqual(leafIds(left), ["2", "1"]);
-  // The pointer stays over the moved window's new cell, so the next
-  // dropTarget is null and the layout does not flip back and forth.
-  assert.equal(dropTarget(below, "3", 640, 1100, WIDE, GAP), null);
+  // Right of 1: 1 keeps the left edge.
+  const right = moveBeside(open(WIDE, 2), "2", "1", "right", WIDE, GAP);
+  assert.deepEqual(leafIds(right), ["1", "2"]);
+  // The answer depends on the pointer only: after the move it is the same,
+  // so the layout does not flip back and forth.
+  const again = dropTarget(below, "3", 640, 1100, WIDE, GAP, "rightOrDown");
+  assert.deepEqual(again, dropTarget(open(WIDE, 3), "3", 640, 1100, WIDE, GAP, "rightOrDown"));
 });
 
 test("moveBeside keeps the tree when a window would get too small", () => {

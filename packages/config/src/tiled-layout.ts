@@ -284,9 +284,18 @@ export function canInsert(
 const DROP_EDGE = 0.25;
 
 /**
+ * Which sides of the window under the pointer a dragged window can take.
+ * `all`: beside near the left or right edge, else above or below.
+ * `rightOrDown`: the window under the pointer stays where it is and the
+ * dragged one goes to its right or below it (a tab pulled out of Chrome).
+ */
+export type DropSides = "all" | "rightOrDown";
+
+/**
  * Where a dragged window `dragId` lands for the pointer at `x`/`y`: the
- * window under the pointer and the side of it. Null over the dragged
- * window's own cell, a gap, or nothing.
+ * window under the pointer and the side of it. The windows are laid out
+ * without the dragged one, so the answer depends on the pointer only and
+ * a move cannot flip the next answer back. Null over a gap or nothing.
  */
 export function dropTarget(
   tree: TileTree,
@@ -295,10 +304,10 @@ export function dropTarget(
   y: number,
   area: TileRect,
   gap: number,
+  sides: DropSides = "all",
 ): { targetId: string; side: TileDirection } | null {
-  for (const [id, rect] of layout(tree, area, gap)) {
+  for (const [id, rect] of layout(remove(tree, dragId), area, gap)) {
     if (
-      id === dragId ||
       x < rect.x ||
       x >= rect.x + rect.width ||
       y < rect.y ||
@@ -308,14 +317,20 @@ export function dropTarget(
     }
     const across = (x - rect.x) / rect.width;
     const down = (y - rect.y) / rect.height;
-    const side: TileDirection =
-      across < DROP_EDGE
-        ? "left"
-        : across > 1 - DROP_EDGE
-          ? "right"
-          : down < 0.5
-            ? "up"
-            : "down";
+    let side: TileDirection;
+    if (sides === "rightOrDown") {
+      // Above the diagonal from the top-left corner: right; below it: down.
+      side = down > across ? "down" : "right";
+    } else {
+      side =
+        across < DROP_EDGE
+          ? "left"
+          : across > 1 - DROP_EDGE
+            ? "right"
+            : down < 0.5
+              ? "up"
+              : "down";
+    }
     return { targetId: id, side };
   }
   return null;

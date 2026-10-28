@@ -38,9 +38,16 @@ pub struct ClientMove {
     client_offset: Point<i32, Logical>,
     start_pointer: Point<f64, Logical>,
     last_rect: WindowPositionSnapshot,
+    /// The pointer's place on the frame, from Chrome's first request (the
+    /// tab it holds), kept inside the frame. Later requests only say the
+    /// drag goes on: the frame follows the real pointer.
+    grab: Option<Point<f64, Logical>>,
     /// Requests seen, to log only some of them.
     updates: u32,
 }
+
+/// The grab point stays at least this far inside the frame's sides.
+const GRAB_MARGIN: f64 = 40.0;
 
 /// True for a surface of the embedded xwayland-satellite, i.e. an X11 window.
 pub fn is_satellite_surface(surface: &WlSurface) -> bool {
@@ -176,6 +183,7 @@ impl ShojiWM {
                 (root.x, root.y).into(),
                 (root.width, root.height).into(),
             )),
+            grab: None,
             updates: 0,
         };
         let event = self.client_move_event(
@@ -198,15 +206,27 @@ impl ShojiWM {
         let Some(client_move) = self.client_move.as_mut() else {
             return;
         };
-        // The frame goes where the requested client area needs it.
-        let frame = requested - client_move.client_offset;
+        // Chrome keeps the tab under the pointer where it sat in the old
+        // window, which can be wider than this frame, and its requests jump
+        // while the tiling moves windows. So take the grab point once, keep
+        // it inside the frame, and follow the pointer from then on.
+        let size = client_move.start_rect.size;
+        let grab = *client_move.grab.get_or_insert_with(|| {
+            let requested_frame = (requested - client_move.client_offset).to_f64();
+            let grab = pointer - requested_frame;
+            let clamp = |value: f64, length: i32| {
+                value.clamp(GRAB_MARGIN.min(length as f64 / 2.0), (length as f64 - GRAB_MARGIN).max(length as f64 / 2.0))
+            };
+            Point::from((clamp(grab.x, size.w), clamp(grab.y, size.h)))
+        });
+        let frame = pointer - grab;
         client_move.updates += 1;
         if client_move.updates % 20 == 1 {
-            info!(?requested, ?frame, ?pointer, "client move update");
+            info!(?requested, ?frame, ?grab, ?pointer, "client move update");
         }
         let rect = WindowPositionSnapshot {
-            x: frame.x as f64,
-            y: frame.y as f64,
+            x: frame.x,
+            y: frame.y,
             width: client_move.start_rect.size.w as f64,
             height: client_move.start_rect.size.h as f64,
         };

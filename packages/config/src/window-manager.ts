@@ -7136,7 +7136,7 @@ export class Workspace {
 
   /**
    * Tiled mode: the dragged tile's cell moves to the window under the
-   * pointer, on the side the pointer is nearest (see `dropTarget`). The
+   * pointer, on the side `dropTarget` picks. The
    * others make room at once; the drop keeps the new place.
    */
   private moveTreeTileToPointer(
@@ -7155,6 +7155,8 @@ export class Workspace {
       pointerY,
       area,
       TILE_GAP,
+      // A tab pulled out of Chrome: the window it came from stays put.
+      isClientDrag(window) ? "rightOrDown" : "all",
     );
     if (target) {
       this.tree = moveTileBeside(
