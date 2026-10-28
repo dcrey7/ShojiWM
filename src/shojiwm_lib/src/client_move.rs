@@ -49,6 +49,20 @@ pub struct ClientMove {
 /// The grab point stays at least this far inside the frame's sides.
 const GRAB_MARGIN: f64 = 40.0;
 
+/// The last ignored move request's surface and reason, so each new reason
+/// is logged once instead of on every request.
+static LAST_IGNORED_MOVE: std::sync::Mutex<Option<(u32, &'static str)>> =
+    std::sync::Mutex::new(None);
+
+/// Log why an X11 move request was ignored, once per surface and reason.
+fn note_ignored_move(surface_id: u32, reason: &'static str) {
+    let mut last = LAST_IGNORED_MOVE.lock().unwrap_or_else(|p| p.into_inner());
+    if *last != Some((surface_id, reason)) {
+        info!(surface_id, reason, "client move request ignored");
+        *last = Some((surface_id, reason));
+    }
+}
+
 /// True for a surface of the embedded xwayland-satellite, i.e. an X11 window.
 pub fn is_satellite_surface(surface: &WlSurface) -> bool {
     surface.client().is_some_and(|client| {
@@ -65,9 +79,11 @@ impl ShojiWM {
     /// where the layout puts them.
     pub fn x11_client_move_request(&mut self, surface_id: u32, x: i32, y: i32) {
         if !self.left_button_held {
+            note_ignored_move(surface_id, "left button not held");
             return;
         }
         let Some(window) = self.satellite_window(surface_id) else {
+            note_ignored_move(surface_id, "no mapped window for the surface");
             return;
         };
         let Some(origin) = self.outputs_origin() else {
@@ -83,6 +99,7 @@ impl ShojiWM {
             self.end_client_move();
         }
         if self.client_move.is_none() && !self.start_client_move(window) {
+            note_ignored_move(surface_id, "move did not start (no decoration yet, or the config took no move)");
             return;
         }
         self.update_client_move(requested);

@@ -1165,12 +1165,17 @@ export class HybridWindowManager {
 
   public onFirstCommit(window: WaylandWindow) {
     this.presentedWindowIds.add(window.id);
+    if (isClientDrag(window)) {
+      this.liveTabWindows.add(window);
+    }
     if (!this.tileabilityByWindowId.has(window.id)) {
       this.trackWindowTileability(window);
     }
     if (!this.windowStack.has(window)) {
       this.windowStack.add(window, { at: "back" });
     }
+    // A tab Chrome drags out opens on top, not at the back.
+    this.raiseTabWindows();
     window.setCloseAnimationDuration(OPEN_CLOSE_ANIMATION_DURATION);
 
     const layoutWasDeferred = this.deferredInitialLayoutWindowIds.delete(
@@ -1220,11 +1225,12 @@ export class HybridWindowManager {
     scheduleCloseAnimation(window);
     this.forgetDragOf(window);
     if (isClientDrag(window)) {
+      this.liveTabWindows.delete(window);
       noteTabDrag({ kind: "start-close", id: window.id, front: this.windowStack.front()?.id ?? null });
       // It shrinks back into its tab while Chrome focuses the window the
       // tab joins; that focus must not cover the shrink.
       this.closingTabWindows.add(window);
-      this.raiseClosingTabWindows();
+      this.raiseTabWindows();
     }
 
     for (const workspace of this.workspaces.values()) {
@@ -1241,10 +1247,17 @@ export class HybridWindowManager {
 
   /** Tab windows shrinking back into Chrome; they stay on top meanwhile. */
   private readonly closingTabWindows = new Set<WaylandWindow>();
+  /**
+   * Tab windows Chrome is dragging out, from their opening to their drop.
+   * Chrome hands the focus back and forth between such a window and the
+   * window the tab came from, and focus raises; these stay on top anyway.
+   */
+  private readonly liveTabWindows = new Set<WaylandWindow>();
 
-  private raiseClosingTabWindows() {
-    for (const window of this.closingTabWindows) {
-      if (this.windowStack.has(window)) {
+  /** Put the live and closing tab windows back on top (after a raise). */
+  private raiseTabWindows() {
+    for (const window of [...this.liveTabWindows, ...this.closingTabWindows]) {
+      if (this.windowStack.has(window) && this.windowStack.front()?.id !== window.id) {
         this.windowStack.raise(window);
       }
     }
@@ -1291,6 +1304,7 @@ export class HybridWindowManager {
 
   public onClose(window: WaylandWindow) {
     this.closingTabWindows.delete(window);
+    this.liveTabWindows.delete(window);
     this.presentedWindowIds.delete(window.id);
     this.keyHalfByWindowId.delete(window.id);
     this.lastRestoreAtMs.delete(window.id);
@@ -1347,7 +1361,7 @@ export class HybridWindowManager {
           z: this.windowStack.zIndexValue(window),
         });
       }
-      this.raiseClosingTabWindows();
+      this.raiseTabWindows();
       if (this.shouldDeferFocusLayoutForInitialOpen(window, workspace)) {
         this.applyWorkspaceStackPolicy(workspace);
         return;
@@ -1447,18 +1461,16 @@ export class HybridWindowManager {
       if (event.phase === "start") {
         growTabWindow(event);
       }
+      if (event.phase === "end" || event.phase === "cancel") {
+        // Dropped: an ordinary window from now on.
+        this.liveTabWindows.delete(event.window);
+      }
       lastTabDragPointer.set(event.window.id, event.currentPointer);
     }
     const workspace = this.findWorkspaceForWindow(event.window);
     if (workspace?.isTiled && workspace.shouldTile(event.window)) {
       this.onTileWindowMove(event, workspace);
       this.applyWorkspaceStackPolicy(workspace);
-      if (event.phase === "start" && isClientDrag(event.window)) {
-        // A tab Chrome drags out never gets the focus by itself (the button
-        // is down on the old window): give it, so the old window, focused,
-        // does not keep coming back on top.
-        event.window.focus();
-      }
       if (
         (event.phase === "start" || event.phase === "update") &&
         this.windowStack.front()?.id !== event.window.id
