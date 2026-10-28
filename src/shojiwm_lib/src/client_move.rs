@@ -25,6 +25,8 @@ use smithay::{
     input::pointer::Focus,
     utils::{Logical, Point, Rectangle, SERIAL_COUNTER},
 };
+use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
+use std::time::Duration;
 use tracing::info;
 
 /// One client-driven move, from the first request to the button release.
@@ -45,6 +47,11 @@ pub struct ClientMove {
     /// Requests seen, to log only some of them.
     updates: u32,
 }
+
+/// How often, and how many times, a move that could not start is tried
+/// again (about half a second in all).
+const CLIENT_MOVE_RETRY_INTERVAL: Duration = Duration::from_millis(16);
+const CLIENT_MOVE_RETRIES: u32 = 30;
 
 /// The grab point stays at least this far inside the frame's sides.
 const GRAB_MARGIN: f64 = 40.0;
@@ -78,6 +85,11 @@ impl ShojiWM {
     /// which is when Chrome drags a tab window; at other times X11 windows stay
     /// where the layout puts them.
     pub fn x11_client_move_request(&mut self, surface_id: u32, x: i32, y: i32) {
+        self.try_x11_client_move(surface_id, x, y, 0);
+    }
+
+    /// One try at a move request; `tries` counts the retries before it.
+    fn try_x11_client_move(&mut self, surface_id: u32, x: i32, y: i32, tries: u32) {
         if !self.left_button_held {
             note_ignored_move(surface_id, "left button not held");
             return;
@@ -100,9 +112,42 @@ impl ShojiWM {
         }
         if self.client_move.is_none() && !self.start_client_move(window) {
             note_ignored_move(surface_id, "move did not start (no decoration yet, or the config took no move)");
+            self.retry_client_move(surface_id, x, y, tries);
             return;
         }
+        self.client_move_retry = None;
         self.update_client_move(requested);
+    }
+
+    /// Chrome's first move requests for a new tab window come before the
+    /// window is ready, and Chrome can stop asking (the pointer rests) before
+    /// it is. Keep the latest request and try it again each frame while the
+    /// button is held, up to `CLIENT_MOVE_RETRIES` times.
+    fn retry_client_move(&mut self, surface_id: u32, x: i32, y: i32, tries: u32) {
+        if tries >= CLIENT_MOVE_RETRIES {
+            self.client_move_retry = None;
+            return;
+        }
+        let armed = self.client_move_retry.is_some();
+        self.client_move_retry = Some((surface_id, x, y, tries + 1));
+        if armed {
+            // A timer is on its way; it takes the newest request.
+            return;
+        }
+        let result = self.loop_handle.insert_source(
+            Timer::from_duration(CLIENT_MOVE_RETRY_INTERVAL),
+            |_, _, state| {
+                if let Some((surface_id, x, y, tries)) = state.client_move_retry.take() {
+                    if state.client_move.is_none() {
+                        state.try_x11_client_move(surface_id, x, y, tries);
+                    }
+                }
+                TimeoutAction::Drop
+            },
+        );
+        if result.is_err() {
+            self.client_move_retry = None;
+        }
     }
 
     /// The left button came up: finish the client-driven move, if any.

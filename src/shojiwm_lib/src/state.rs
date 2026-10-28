@@ -508,6 +508,9 @@ pub struct ShojiWM {
     pub left_button_held: bool,
     /// An X11 client moving its own window (see `crate::client_move`).
     pub client_move: Option<crate::client_move::ClientMove>,
+    /// A move request that could not start yet, tried again by a timer:
+    /// (surface id, x, y, tries so far).
+    pub client_move_retry: Option<(u32, i32, i32, u32)>,
     /// X11 toplevels that appeared while the left button was held: Chrome's
     /// dragged-out tab windows. The config floats them and skips their Magic
     /// Lamp (`clientDrag` on the window snapshot).
@@ -1882,6 +1885,7 @@ impl ShojiWM {
             tap_interrupted: false,
             left_button_held: false,
             client_move: None,
+            client_move_retry: None,
             client_drag_surfaces: std::collections::HashSet::new(),
             tap_armed_at: 0,
             pending_tap_binding_ids: Vec::new(),
