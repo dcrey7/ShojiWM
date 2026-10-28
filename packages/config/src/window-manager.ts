@@ -193,10 +193,17 @@ const CLIENT_DRAG_PLACE_WAIT_MS = 2000;
 const TAB_DRAG_CLOSE_FADE_MS = 150;
 /** ... shrinking by this share of its size. */
 const TAB_DRAG_CLOSE_SHRINK = 0.15;
-/** A dragged-out tab window stays hidden this long while Chrome draws it, */
-const TAB_DRAG_OPEN_HIDDEN_MS = 120;
-/** ... then fades in this fast. */
-const TAB_DRAG_OPEN_FADE_MS = 150;
+/** A dragged-out tab window grows out of its tab this fast, */
+const TAB_DRAG_GROW_MS = 220;
+/** ... fading in over the first part of it, */
+const TAB_DRAG_GROW_FADE_MS = 90;
+/** ... from a strip this big (about one Chrome tab). */
+const TAB_DRAG_TAB_WIDTH = 240;
+const TAB_DRAG_TAB_HEIGHT = 36;
+/** Without a drag it fades in after this. */
+const TAB_DRAG_GROW_WAIT_MS = 300;
+/** Tab windows that came out of their tab already (see `growTabWindow`). */
+const grownTabWindowIds = new Set<string>();
 
 /**
  * Windows that always float, also on a tiled workspace:
@@ -1381,6 +1388,9 @@ export class HybridWindowManager {
   }
 
   public onWindowMove(event: WindowMoveEvent) {
+    if (event.phase === "start" && isClientDrag(event.window)) {
+      growTabWindow(event);
+    }
     const workspace = this.findWorkspaceForWindow(event.window);
     if (workspace?.isTiled && workspace.shouldTile(event.window)) {
       this.onTileWindowMove(event, workspace);
@@ -8218,25 +8228,23 @@ function withManagedWindowOnlySSDRebuildSuppressed<T>(
 
 function scheduleOpenAnimation(window: WaylandWindow): void {
   if (isClientDrag(window)) {
-    // A tab dragged out of Chrome: Chrome's first frames still have the old
-    // window's size and flash. Stay hidden while it draws the miniature,
-    // then fade in under the pointer.
+    // A tab dragged out of Chrome stays hidden until its drag starts and
+    // `growTabWindow` brings it out of the tab. Without a drag it just
+    // fades in.
     window.scheduleAnimation({
       channel: OPEN_ANIMATION_CHANNEL,
-      opacity: { from: 0, to: 0, duration: TAB_DRAG_OPEN_HIDDEN_MS, mode: "multiply" },
+      opacity: { from: 0, to: 0, duration: TAB_DRAG_GROW_WAIT_MS, mode: "multiply" },
     });
     setTimeout(() => {
+      if (grownTabWindowIds.has(window.id)) {
+        return;
+      }
+      grownTabWindowIds.add(window.id);
       window.scheduleAnimation({
         channel: OPEN_ANIMATION_CHANNEL,
-        opacity: {
-          from: 0,
-          to: 1,
-          duration: TAB_DRAG_OPEN_FADE_MS,
-          easing: WINDOW_OPEN_EASING,
-          mode: "multiply",
-        },
+        opacity: { from: 0, to: 1, duration: TAB_DRAG_GROW_MS, mode: "multiply" },
       });
-    }, TAB_DRAG_OPEN_HIDDEN_MS);
+    }, TAB_DRAG_GROW_WAIT_MS);
     return;
   }
   if (!window.isTransient()) {
@@ -8265,8 +8273,52 @@ function scheduleOpenAnimation(window: WaylandWindow): void {
   });
 }
 
+/**
+ * A tab dragged out of Chrome comes out of the tab: the miniature starts as
+ * a tab-sized strip under the pointer (where the tab was) and springs open
+ * to its size. Once per window, at the start of its first drag.
+ */
+function growTabWindow(event: WindowMoveEvent): void {
+  const window = event.window;
+  if (grownTabWindowIds.has(window.id)) {
+    return;
+  }
+  grownTabWindowIds.add(window.id);
+  const rect = event.currentRect;
+  const width = rect.width;
+  const height = rect.height;
+  const tabWidth = Math.min(TAB_DRAG_TAB_WIDTH, width);
+  const tabHeight = Math.min(TAB_DRAG_TAB_HEIGHT, height);
+  const grabX = event.currentPointer.x - rect.x;
+  const grabY = event.currentPointer.y - rect.y;
+  const tabLeft = Math.min(Math.max(grabX - tabWidth / 2, 0), width - tabWidth);
+  const tabTop = Math.min(Math.max(grabY - tabHeight / 2, 0), height - tabHeight);
+  window.scheduleAnimation({
+    channel: OPEN_ANIMATION_CHANNEL,
+    rect: {
+      from: {
+        x: tabLeft,
+        y: tabTop,
+        width: tabWidth - width,
+        height: tabHeight - height,
+      },
+      to: { x: 0, y: 0, width: 0, height: 0 },
+      duration: TAB_DRAG_GROW_MS,
+      easing: WINDOW_OPEN_EASING,
+      mode: "add",
+    },
+    opacity: {
+      from: 0,
+      to: 1,
+      duration: TAB_DRAG_GROW_FADE_MS,
+      mode: "multiply",
+    },
+  });
+}
+
 function scheduleCloseAnimation(window: WaylandWindow): void {
   if (isClientDrag(window)) {
+    grownTabWindowIds.delete(window.id);
     // A dragged tab window dropped back into Chrome: its tab merges into the
     // other window, so it shrinks a little to its middle and fades, not the
     // lamp.
