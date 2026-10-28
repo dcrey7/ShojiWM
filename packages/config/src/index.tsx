@@ -58,6 +58,7 @@ import {
 import { ISLAND_GLASS } from "./effect/island-glass";
 import { animationRunning } from "./animation-activity";
 import { qualityDebug, qualityLight } from "./quality";
+import { tabDragDebug } from "./window-manager";
 import { createCoverflow } from "./coverflow";
 import { createFlip3D } from "./flip-3d";
 import { broadcastSwitcherLabel } from "./switcher-label";
@@ -559,6 +560,7 @@ WORKSPACE_IPC.handle("debug.slidingPopups", (params) => {
 
 WORKSPACE_IPC.handle("debug.wobble", () => ({ runs: jellyDragDebug() }));
 WORKSPACE_IPC.handle("debug.quality", () => qualityDebug());
+WORKSPACE_IPC.handle("debug.tabDrag", () => ({ events: tabDragDebug() }));
 
 WORKSPACE_IPC.handle("debug.magicLamp", (params) => ({
   runs: magicLampDebug(

@@ -206,6 +206,17 @@ const TAB_DRAG_TAB_WIDTH = 240;
 const TAB_DRAG_TAB_HEIGHT = 36;
 /** Without a drag it fades in after this. */
 const TAB_DRAG_GROW_WAIT_MS = 300;
+/** Recent tab drag stacking events, for the `debug.tabDrag` IPC. */
+const tabDragDebugEvents: Record<string, unknown>[] = [];
+export function tabDragDebug(): Record<string, unknown>[] {
+  return tabDragDebugEvents;
+}
+function noteTabDrag(event: Record<string, unknown>) {
+  tabDragDebugEvents.push({ t: Date.now(), ...event });
+  if (tabDragDebugEvents.length > 120) {
+    tabDragDebugEvents.shift();
+  }
+}
 /** Tab windows that came out of their tab already (see `growTabWindow`). */
 const grownTabWindowIds = new Set<string>();
 
@@ -1209,6 +1220,7 @@ export class HybridWindowManager {
     scheduleCloseAnimation(window);
     this.forgetDragOf(window);
     if (isClientDrag(window)) {
+      noteTabDrag({ kind: "start-close", id: window.id, front: this.windowStack.front()?.id ?? null });
       // It shrinks back into its tab while Chrome focuses the window the
       // tab joins; that focus must not cover the shrink.
       this.closingTabWindows.add(window);
@@ -1327,6 +1339,14 @@ export class HybridWindowManager {
     const workspace = this.findWorkspaceForWindow(window);
     if (focused) {
       this.windowStack.raise(window);
+      if (this.tileDrag || this.closingTabWindows.size > 0) {
+        noteTabDrag({
+          kind: "focus",
+          id: window.id,
+          dragging: this.tileDrag?.window.id ?? null,
+          z: this.windowStack.zIndexValue(window),
+        });
+      }
       this.raiseClosingTabWindows();
       if (this.shouldDeferFocusLayoutForInitialOpen(window, workspace)) {
         this.applyWorkspaceStackPolicy(workspace);
@@ -1411,6 +1431,18 @@ export class HybridWindowManager {
   }
 
   public onWindowMove(event: WindowMoveEvent) {
+    if (isClientDrag(event.window) && event.phase !== "update") {
+      const workspace = this.findWorkspaceForWindow(event.window);
+      noteTabDrag({
+        kind: `move-${event.phase}`,
+        id: event.window.id,
+        workspace: workspace ? `${workspace.monitor}:${workspace.index}` : null,
+        tilePath: Boolean(workspace?.isTiled && workspace.shouldTile(event.window)),
+        inStack: this.windowStack.has(event.window),
+        front: this.windowStack.front()?.id ?? null,
+        z: this.windowStack.zIndexValue(event.window),
+      });
+    }
     if (isClientDrag(event.window)) {
       if (event.phase === "start") {
         growTabWindow(event);
@@ -1432,7 +1464,16 @@ export class HybridWindowManager {
         this.windowStack.front()?.id !== event.window.id
       ) {
         // The dragged tile stays above the others.
+        const front = this.windowStack.front()?.id ?? null;
         this.windowStack.raise(event.window);
+        if (isClientDrag(event.window)) {
+          noteTabDrag({
+            kind: "raise-dragged",
+            id: event.window.id,
+            over: front,
+            z: this.windowStack.zIndexValue(event.window),
+          });
+        }
       }
       return;
     }
