@@ -252,6 +252,12 @@ const MAGIC_LAMP_Z_INDEX_RANGE = 9_000_000;
 const FLOATING_WINDOW_Z_INDEX_BASE = 1_500_000_000;
 const WINDOW_STACK_Z_INDEX_RANGE = 100_000_000;
 const FOCUSED_TILED_WINDOW_Z_INDEX = 1_000_000_000;
+/**
+ * A tile being dragged, and a tab Chrome drags out from its opening until its
+ * shrink back ends: above the focused tile, because Chrome hands the focus
+ * back and forth with the window the tab came from. Below the Magic Lamp.
+ */
+const DRAGGED_WINDOW_Z_INDEX = 1_500_000_000;
 const REORDERING_TILED_WINDOW_Z_INDEX = -2_000_000_000;
 
 /** Where a (non-fullscreen) window sits in the stack; higher is on top. */
@@ -266,13 +272,19 @@ function windowZIndex(window: WaylandWindow): number {
       Math.max(-MAGIC_LAMP_Z_INDEX_RANGE, Math.min(MAGIC_LAMP_Z_INDEX_RANGE, stackZIndex))
     );
   }
-  if (!window.state[WINDOW_STATE_WORKSPACE_TILED]()) {
-    return stackZIndex;
-  }
   const stackOffset = Math.max(
     -WINDOW_STACK_Z_INDEX_RANGE,
     Math.min(WINDOW_STACK_Z_INDEX_RANGE, stackZIndex),
   );
+  if (
+    window.state[WINDOW_STATE_TILE_DRAGGING]() ||
+    HYBRID_WINDOW_MANAGER.keepsTabWindowOnTop(window)
+  ) {
+    return DRAGGED_WINDOW_Z_INDEX + stackOffset;
+  }
+  if (!window.state[WINDOW_STATE_WORKSPACE_TILED]()) {
+    return stackZIndex;
+  }
   if (!window.state[WINDOW_STATE_TILED]()) {
     return FLOATING_WINDOW_Z_INDEX_BASE + stackOffset;
   }

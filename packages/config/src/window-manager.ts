@@ -1254,6 +1254,11 @@ export class HybridWindowManager {
    */
   private readonly liveTabWindows = new Set<WaylandWindow>();
 
+  /** True for a tab window being dragged out or shrinking back into Chrome. */
+  public keepsTabWindowOnTop(window: WaylandWindow): boolean {
+    return this.liveTabWindows.has(window) || this.closingTabWindows.has(window);
+  }
+
   /** Put the live and closing tab windows back on top (after a raise). */
   private raiseTabWindows() {
     for (const window of [...this.liveTabWindows, ...this.closingTabWindows]) {
