@@ -1208,6 +1208,12 @@ export class HybridWindowManager {
   public onStartClose(window: WaylandWindow) {
     scheduleCloseAnimation(window);
     this.forgetDragOf(window);
+    if (isClientDrag(window)) {
+      // It shrinks back into its tab while Chrome focuses the window the
+      // tab joins; that focus must not cover the shrink.
+      this.closingTabWindows.add(window);
+      this.raiseClosingTabWindows();
+    }
 
     for (const workspace of this.workspaces.values()) {
       const nextFocus = workspace.removeWindow(window);
@@ -1219,6 +1225,17 @@ export class HybridWindowManager {
       }
     }
     this.syncWorkspaceVisibility();
+  }
+
+  /** Tab windows shrinking back into Chrome; they stay on top meanwhile. */
+  private readonly closingTabWindows = new Set<WaylandWindow>();
+
+  private raiseClosingTabWindows() {
+    for (const window of this.closingTabWindows) {
+      if (this.windowStack.has(window)) {
+        this.windowStack.raise(window);
+      }
+    }
   }
 
   /**
@@ -1261,6 +1278,7 @@ export class HybridWindowManager {
   }
 
   public onClose(window: WaylandWindow) {
+    this.closingTabWindows.delete(window);
     this.presentedWindowIds.delete(window.id);
     this.keyHalfByWindowId.delete(window.id);
     this.lastRestoreAtMs.delete(window.id);
@@ -1309,6 +1327,7 @@ export class HybridWindowManager {
     const workspace = this.findWorkspaceForWindow(window);
     if (focused) {
       this.windowStack.raise(window);
+      this.raiseClosingTabWindows();
       if (this.shouldDeferFocusLayoutForInitialOpen(window, workspace)) {
         this.applyWorkspaceStackPolicy(workspace);
         return;
