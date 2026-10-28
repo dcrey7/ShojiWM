@@ -231,6 +231,18 @@ impl EmbeddedSatellite {
         self.generation += 1;
         self.ready = false;
         let generation = self.generation;
+        // A new run starts with no known positions and a fresh wake-up pair.
+        let positions_rx = match UnixStream::pair() {
+            Ok((tx, rx)) => {
+                let _ = tx.set_nonblocking(true);
+                *POSITIONS_WAKE.lock().unwrap_or_else(|p| p.into_inner()) = Some(tx);
+                Some(rx)
+            }
+            Err(error) => {
+                warn!(?error, "no wake-up socket for X11 window positions");
+                None
+            }
+        };
         let data = EmbeddedRunData {
             display: self.display_name.clone(),
             listenfds: Mutex::new(listenfds),
@@ -238,6 +250,7 @@ impl EmbeddedSatellite {
             server: Mutex::new(Some(satellite_end)),
             events: self.events.clone(),
             generation,
+            positions_rx: Mutex::new(positions_rx),
         };
         let events = self.events.clone();
         std::thread::Builder::new()
@@ -312,6 +325,33 @@ fn glamor_flags() -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// The write end of the running satellite's wake-up socket for window
+/// positions (see `publish_x11_window_position`).
+static POSITIONS_WAKE: Mutex<Option<UnixStream>> = Mutex::new(None);
+
+/// Tell the embedded satellite where an X11 toplevel really is, so X11
+/// clients see true window positions. Chrome needs them to find the window a
+/// dragged tab is dropped on; without this every X11 window sits at (0,0).
+///
+/// `surface_id` is the protocol id of the toplevel's `wl_surface` on the
+/// satellite connection; `x`/`y` are logical, from the top-left corner of the
+/// box around all outputs.
+pub fn publish_x11_window_position(surface_id: u32, x: i32, y: i32) {
+    if !satellite::window_positions::set(surface_id, x, y) {
+        return;
+    }
+    let wake = POSITIONS_WAKE.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some(mut wake) = wake.as_ref() {
+        // Full means satellite has a wake-up pending already.
+        let _ = std::io::Write::write(&mut wake, &[1]);
+    }
+}
+
+/// Forget a gone toplevel's position.
+pub fn forget_x11_window_position(surface_id: u32) {
+    satellite::window_positions::remove(surface_id);
+}
+
 /// What satellite needs from its embedder, for one run.
 struct EmbeddedRunData {
     display: String,
@@ -320,6 +360,7 @@ struct EmbeddedRunData {
     server: Mutex<Option<UnixStream>>,
     events: Sender<SatelliteEvent>,
     generation: u64,
+    positions_rx: Mutex<Option<UnixStream>>,
 }
 
 impl satellite::RunData for EmbeddedRunData {
@@ -337,6 +378,13 @@ impl satellite::RunData for EmbeddedRunData {
 
     fn server(&self) -> Option<UnixStream> {
         self.server.lock().unwrap_or_else(|p| p.into_inner()).take()
+    }
+
+    fn positions_rx(&self) -> Option<UnixStream> {
+        self.positions_rx
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()
     }
 
     fn xwayland_ready(&self, display: String, pid: u32) {

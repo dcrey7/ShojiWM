@@ -381,12 +381,21 @@ impl SurfaceEvents {
         drop(xdg);
 
         if let Some(pending) = pending {
+            // A popup counts from its parent's X11 position, a toplevel from
+            // its own real position (or the output origin).
+            let parent_origin = state.popup_parent_origin(*data.get::<&x::Window>().unwrap());
             let mut query = data.query::<(&SurfaceScaleFactor, &x::Window, &mut WindowData)>();
             let (scale_factor, window, window_data) = query.get().unwrap();
 
             let window = *window;
-            let x = (pending.x.max(0) as f64 * scale_factor.0) as i32 + window_data.output_offset.x;
-            let y = (pending.y.max(0) as f64 * scale_factor.0) as i32 + window_data.output_offset.y;
+            let (origin_x, origin_y) = parent_origin.unwrap_or_else(|| window_data.origin());
+            let x = (pending.x.max(0) as f64 * scale_factor.0) as i32 + origin_x;
+            let y = (pending.y.max(0) as f64 * scale_factor.0) as i32 + origin_y;
+            if parent_origin.is_some() {
+                // Placed against a real parent position: an output move
+                // must not shift this popup again.
+                window_data.position = Some((x, y));
+            }
             let width = if pending.width > 0 {
                 (pending.width as f64 * scale_factor.0) as u16
             } else {

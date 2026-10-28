@@ -1128,6 +1128,43 @@ impl ShojiWM {
         }
     }
 
+    /// An X11 window (a toplevel of the embedded xwayland-satellite) learns
+    /// where its tile really is. X11 clients find the window under the
+    /// pointer by position: Chrome drops a dragged tab into a window that
+    /// way. Only publishes when the spot changed.
+    fn publish_x11_window_position(&self, window: &Window, client_rect: LogicalRect) {
+        use smithay::reexports::wayland_server::Resource;
+
+        let Some(toplevel) = window.toplevel() else {
+            return;
+        };
+        let surface = toplevel.wl_surface();
+        let from_satellite = surface.client().is_some_and(|client| {
+            client
+                .get_data::<crate::state::ClientState>()
+                .is_some_and(|data| data.xwayland_refresh_override)
+        });
+        if !from_satellite {
+            return;
+        }
+        // X11 coordinates start at the top-left corner of all outputs.
+        let (origin_x, origin_y) = self
+            .space
+            .outputs()
+            .filter_map(|output| self.space.output_geometry(output))
+            .fold((i32::MAX, i32::MAX), |(x, y), geometry| {
+                (x.min(geometry.loc.x), y.min(geometry.loc.y))
+            });
+        if origin_x == i32::MAX {
+            return;
+        }
+        crate::xwayland_satellite::publish_x11_window_position(
+            surface.id().protocol_id(),
+            client_rect.x - origin_x,
+            client_rect.y - origin_y,
+        );
+    }
+
     pub fn apply_runtime_handler_invocation(
         &mut self,
         window: &Window,
@@ -5233,6 +5270,7 @@ impl ShojiWM {
                     );
                 }
                 self.sync_space_location_to_client_rect(&window, current_client);
+                self.publish_x11_window_position(&window, current_client);
                 continue;
             }
 
@@ -5282,6 +5320,7 @@ impl ShojiWM {
                     );
                 }
                 self.sync_space_location_to_client_rect(&window, current_client);
+                self.publish_x11_window_position(&window, current_client);
                 continue;
             }
 
@@ -5388,6 +5427,14 @@ impl ShojiWM {
                         .remove(&window_id);
                 }
             }
+            // An X11 window learns where its tile ends up: the animation's
+            // target, so this changes once per move, not every frame.
+            let final_client = active_rect_override_target
+                .map(|final_root| {
+                    managed_client_rect_from_current_insets(current_root, current_client, final_root)
+                })
+                .unwrap_or(desired_client);
+            self.publish_x11_window_position(&window, final_client);
             if size_changed || subpixel_size_changed {
                 timescope::scope!("ssd apply managed size rebuild");
                 let window_raster_scale = self.decoration_raster_scale_for_window(&window);

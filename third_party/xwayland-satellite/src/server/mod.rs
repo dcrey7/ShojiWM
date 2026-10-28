@@ -136,6 +136,10 @@ struct WindowData {
     attrs: WindowAttributes,
     output_offset: WindowOutputOffset,
     activation_token: Option<String>,
+    /// A toplevel's real X11 position, when the embedding compositor
+    /// published it (see `crate::window_positions`). It replaces the output
+    /// origin as the window's place.
+    position: Option<(i32, i32)>,
 }
 
 impl WindowData {
@@ -150,7 +154,15 @@ impl WindowData {
             },
             output_offset: WindowOutputOffset::default(),
             activation_token,
+            position: None,
         }
+    }
+
+    /// Where the window's own x/y count from: its real position when known,
+    /// else the output origin.
+    fn origin(&self) -> (i32, i32) {
+        self.position
+            .unwrap_or((self.output_offset.x, self.output_offset.y))
     }
 
     fn update_output_offset<C: XConnection>(
@@ -161,6 +173,11 @@ impl WindowData {
     ) {
         log::trace!(target: "output_offset", "offset: {offset:?}");
         if offset == self.output_offset {
+            return;
+        }
+        // A window with a real position stays there.
+        if self.position.is_some() {
+            self.output_offset = offset;
             return;
         }
 
@@ -253,6 +270,8 @@ struct PopupData {
     popup: XdgPopup,
     positioner: XdgPositioner,
     xdg: XdgSurfaceData,
+    /// The X11 window the popup is placed against.
+    parent: x::Window,
 }
 
 trait Event {
@@ -647,6 +666,50 @@ impl<S: X11Selection> ServerState<NoConnection<S>> {
 }
 
 impl<C: XConnection> ServerState<C> {
+    /// Move each toplevel's X11 window to the position the compositor
+    /// published in `crate::window_positions`. The size stays.
+    pub fn apply_window_positions(&mut self) {
+        let positions = crate::window_positions::snapshot();
+        if positions.is_empty() {
+            return;
+        }
+        let mut query = self.inner.world.query::<(
+            &x::Window,
+            &mut WindowData,
+            &client::wl_surface::WlSurface,
+            &SurfaceRole,
+            &SurfaceScaleFactor,
+        )>();
+        for (_, (window, window_data, surface, role, scale)) in query.iter() {
+            if !matches!(role, SurfaceRole::Toplevel(Some(_))) {
+                continue;
+            }
+            let Some(&(x, y)) = positions.get(&surface.id().protocol_id()) else {
+                continue;
+            };
+            let position = (
+                (x as f64 * scale.0).round() as i32,
+                (y as f64 * scale.0).round() as i32,
+            );
+            if window_data.position == Some(position) {
+                continue;
+            }
+            window_data.position = Some(position);
+            let dims = &mut window_data.attrs.dims;
+            dims.x = position.0 as i16;
+            dims.y = position.1 as i16;
+            self.connection.set_window_dims(
+                *window,
+                PendingSurfaceState {
+                    x: position.0,
+                    y: position.1,
+                    width: dims.width as _,
+                    height: dims.height as _,
+                },
+            );
+        }
+    }
+
     pub fn run(&mut self) {
         if let Some(r) = self.queue.prepare_read() {
             let fd = r.connection_fd();
@@ -844,6 +907,24 @@ impl<C: XConnection> ServerState<C> {
 impl<S: X11Selection + 'static> InnerServerState<S> {
     pub fn clientside_fd(&self) -> BorrowedFd<'_> {
         self.queue.as_fd()
+    }
+
+    /// The X11 position of the window a popup is placed against, or `None`
+    /// when `window` is not a popup, its parent is gone, or the parent has no
+    /// real position (then the popup counts from the output origin as usual).
+    fn popup_parent_origin(&self, window: x::Window) -> Option<(i32, i32)> {
+        let entity = *self.windows.get(&window)?;
+        let parent = match &*self.world.get::<&SurfaceRole>(entity).ok()? {
+            SurfaceRole::Popup(Some(popup)) => popup.parent,
+            _ => return None,
+        };
+        let parent_entity = *self.windows.get(&parent)?;
+        let parent_data = self.world.get::<&WindowData>(parent_entity).ok()?;
+        parent_data.position?;
+        Some((
+            parent_data.attrs.dims.x as i32,
+            parent_data.attrs.dims.y as i32,
+        ))
     }
 
     fn handle_globals(&mut self) {
@@ -1104,6 +1185,9 @@ impl<S: X11Selection + 'static> InnerServerState<S> {
     }
 
     pub fn reconfigure_window(&mut self, event: x::ConfigureNotifyEvent) {
+        // A popup's offset counts from its parent's X11 position. Read it
+        // before this window's data is borrowed mutably.
+        let parent_origin = self.popup_parent_origin(event.window());
         let Some((mut win, data)) = self
             .windows
             .get(&event.window())
@@ -1145,9 +1229,11 @@ impl<S: X11Selection + 'static> InnerServerState<S> {
 
         match role {
             SurfaceRole::Popup(Some(popup)) => {
+                let (origin_x, origin_y) =
+                    parent_origin.unwrap_or((win.output_offset.x, win.output_offset.y));
                 popup.positioner.set_offset(
-                    ((event.x() as i32 - win.output_offset.x) as f64 / scale_factor.0) as i32,
-                    ((event.y() as i32 - win.output_offset.y) as f64 / scale_factor.0) as i32,
+                    ((event.x() as i32 - origin_x) as f64 / scale_factor.0) as i32,
+                    ((event.y() as i32 - origin_y) as f64 / scale_factor.0) as i32,
                 );
                 popup.positioner.set_size(
                     1.max((event.width() as f64 / scale_factor.0) as i32),
@@ -1705,6 +1791,7 @@ impl<S: X11Selection + 'static> InnerServerState<S> {
                 configured: false,
                 pending: None,
             },
+            parent,
         }
     }
 }

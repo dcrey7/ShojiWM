@@ -1,4 +1,5 @@
 mod server;
+pub mod window_positions;
 pub mod xstate;
 
 use crate::server::{NoConnection, PendingSurfaceState, ServerState};
@@ -50,6 +51,10 @@ pub trait RunData {
     fn created_server(&self) {}
     fn connected_server(&self) {}
     fn quit_rx(&self) -> Option<UnixStream> {
+        None
+    }
+    /// A socket that gets a byte whenever `window_positions` changed.
+    fn positions_rx(&self) -> Option<UnixStream> {
         None
     }
     fn xwayland_ready(&self, _display: String, _pid: u32) {}
@@ -206,12 +211,24 @@ pub fn main(mut data: impl RunData) -> Option<()> {
     // the UnixStream of choice when not running the integration tests.
     let mut quit_rx = data.quit_rx().unwrap_or(finish_rx);
 
+    // Wakes the loop when the compositor published new window positions.
+    // Without one, an idle pair that never fires.
+    let (positions_rx, _positions_tx) = match data.positions_rx() {
+        Some(rx) => (rx, None),
+        None => {
+            let (rx, tx) = UnixStream::pair().unwrap();
+            (rx, Some(tx))
+        }
+    };
+    positions_rx.set_nonblocking(true).unwrap();
+
     let mut fds = [
         PollFd::from_borrowed_fd(server_fd, PollFlags::IN),
         PollFd::new(&xsock_wl, PollFlags::IN),
         PollFd::from_borrowed_fd(display_fd, PollFlags::IN),
         PollFd::new(&quit_rx, PollFlags::IN),
         PollFd::new(&ready_rx, PollFlags::IN),
+        PollFd::new(&positions_rx, PollFlags::IN),
     ];
 
     loop {
@@ -223,6 +240,10 @@ pub fn main(mut data: impl RunData) -> Option<()> {
                         error!("Xwayland exited early with {status}");
                     }
                     return None;
+                }
+                if !fds[5].revents().is_empty() {
+                    // No X11 windows yet: nothing to move.
+                    drain(&positions_rx);
                 }
                 if !fds[4].revents().is_empty() {
                     break;
@@ -295,8 +316,18 @@ pub fn main(mut data: impl RunData) -> Option<()> {
                     }
                     return None;
                 }
+                if !fds[5].revents().is_empty() {
+                    drain(&positions_rx);
+                    server_state.apply_window_positions();
+                }
             }
             Err(other) => panic!("Poll failed: {other:?}"),
         }
     }
+}
+
+/// Read a wake-up socket empty; the bytes carry no data.
+fn drain(mut socket: &UnixStream) {
+    let mut buf = [0u8; 64];
+    while matches!(socket.read(&mut buf), Ok(n) if n > 0) {}
 }

@@ -195,6 +195,14 @@ impl XdgShellHandler for ShojiWM {
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
         let wl_surface = surface.wl_surface();
+        // An X11 window's published position goes with it (ids are reused).
+        if wl_surface.client().is_some_and(|client| {
+            client
+                .get_data::<crate::state::ClientState>()
+                .is_some_and(|data| data.xwayland_refresh_override)
+        }) {
+            crate::xwayland_satellite::forget_x11_window_position(wl_surface.id().protocol_id());
+        }
         let Some(window) = self
             .space
             .elements()
