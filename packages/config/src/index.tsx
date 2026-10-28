@@ -1386,6 +1386,35 @@ function plasmaShellComposition(
   );
 }
 
+/** App ids whose last part does not read as the app's name. */
+const APP_NAMES: Record<string, string> = {
+  code: "VS Code",
+  "google-chrome": "Chrome",
+  "com.obsproject.studio": "OBS Studio",
+  obs: "OBS Studio",
+};
+
+/**
+ * The title bar shows the app's name, not the window title:
+ * "org.kde.konsole" -> "Konsole", "code" -> "VS Code". A window with no
+ * app id keeps its title.
+ */
+function appName(appId: string | null | undefined, title: string): string {
+  if (!appId) {
+    return title;
+  }
+  const known = APP_NAMES[appId.toLowerCase()];
+  if (known) {
+    return known;
+  }
+  const last = appId.split(".").pop() || appId;
+  return last
+    .split(/[-_]/)
+    .filter((word) => word.length > 0)
+    .map((word) => word[0].toUpperCase() + word.slice(1))
+    .join(" ");
+}
+
 /** The client draws its own title bar (CSD), so ours is not drawn. */
 function usesClientDecoration(decoration: WindowDecorationState): boolean {
   return (
@@ -1538,7 +1567,7 @@ COMPOSITOR.window.composition = (window: WaylandWindow) => {
   );
   const label = (
     <Label
-      text={window.title}
+      text={computed(() => appName(window.appId(), window.title()))}
       style={{
         color: titleColor,
         fontFamily: ["Noto Sans CJK JP", "Noto Color Emoji"],
