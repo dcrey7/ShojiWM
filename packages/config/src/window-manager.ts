@@ -179,6 +179,14 @@ export const WINDOW_STATE_SNAP_MONITOR = createWindowState<string | null>(
 const OPEN_CLOSE_ANIMATION_DURATION = seconds(0.5);
 /** The close lamp's run plus a little slack, so the snapshot outlives it. */
 const CLOSE_LAMP_SLACK_MS = 120;
+/** A dragged-out Chrome tab is this share of the screen while it moves. */
+const TAB_DRAG_SHARE = 0.3;
+const TAB_DRAG_MIN_WIDTH = 480;
+const TAB_DRAG_MIN_HEIGHT = 320;
+/** The pointer holds the miniature at least this far inside its sides. */
+const TAB_DRAG_GRAB_MARGIN = 40;
+/** ... and no lower than this below its top (the title bar). */
+const TAB_DRAG_GRAB_MAX_Y = 30;
 /** A Chrome tab window whose drag never starts takes a tile after this. */
 const CLIENT_DRAG_PLACE_WAIT_MS = 2000;
 /** A dragged tab window that merges back into Chrome fades out this fast. */
@@ -1327,6 +1335,43 @@ export class HybridWindowManager {
     event.window.state[WINDOW_STATE_RECT].set(nextRect);
     workspace?.syncFloatingWindowRect(event.window, nextRect);
     this.applyWorkspaceStackPolicy(workspace);
+  }
+
+  /**
+   * A tab dragged out of Chrome comes as a window that never had a size
+   * (just its title bar). While it is dragged it is a miniature: a share of
+   * the screen, held by the pointer at the same spot of its top. The same
+   * event goes to the layout and to the jelly drag, so both see this rect.
+   */
+  public tabDragMoveEvent(event: WindowMoveEvent): WindowMoveEvent {
+    if (!isClientDrag(event.window)) {
+      return event;
+    }
+    const screen = this.findWorkspaceForWindow(event.window)?.tiledViewport();
+    if (!screen) {
+      return event;
+    }
+    const width = Math.round(Math.max(TAB_DRAG_MIN_WIDTH, screen.width * TAB_DRAG_SHARE));
+    const height = Math.round(Math.max(TAB_DRAG_MIN_HEIGHT, screen.height * TAB_DRAG_SHARE));
+    const grabX = Math.min(
+      Math.max(event.currentPointer.x - event.currentRect.x, TAB_DRAG_GRAB_MARGIN),
+      width - TAB_DRAG_GRAB_MARGIN,
+    );
+    const grabY = Math.min(
+      Math.max(event.currentPointer.y - event.currentRect.y, 0),
+      TAB_DRAG_GRAB_MAX_Y,
+    );
+    const around = (pointer: { x: number; y: number }) => ({
+      x: pointer.x - grabX,
+      y: pointer.y - grabY,
+      width,
+      height,
+    });
+    return {
+      ...event,
+      startRect: around(event.startPointer),
+      currentRect: around(event.currentPointer),
+    };
   }
 
   public onWindowMove(event: WindowMoveEvent) {
@@ -5879,6 +5924,11 @@ export class Workspace {
   /** The rect the tiled mode fills: the tile viewport (screen minus margins). */
   private tiledArea(): TileRect {
     return plainRect(this.tileViewportRect());
+  }
+
+  /** The area the tiles fill, for sizing things against the screen. */
+  public tiledViewport(): TileRect {
+    return this.tiledArea();
   }
 
   /**

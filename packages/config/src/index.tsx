@@ -1268,8 +1268,10 @@ COMPOSITOR.event.onWindowMove((event) => {
   if (isPlasmaShellWindow(event.window)) {
     return;
   }
-  HYBRID_WINDOW_MANAGER.onWindowMove(event);
-  jellyDragOnWindowMove(event);
+  // A dragged-out Chrome tab moves as a miniature (see tabDragMoveEvent).
+  const moveEvent = HYBRID_WINDOW_MANAGER.tabDragMoveEvent(event);
+  HYBRID_WINDOW_MANAGER.onWindowMove(moveEvent);
+  jellyDragOnWindowMove(moveEvent);
 });
 
 COMPOSITOR.event.onWindowMaximizeRequest((event) => {
