@@ -190,7 +190,8 @@ export function createKeymap(deps: KeymapDeps): KeyEntry[] {
       binds: [
         {
           keys: "Super+B",
-          action: spawn("google-chrome-stable --enable-features=OzonePlatform --ozone-platform=wayland"),
+          // WhiteSur (~/.themes) gives Chrome's own title bar the traffic lights.
+          action: spawn("env GTK_THEME=WhiteSur-Dark google-chrome-stable --enable-features=OzonePlatform --ozone-platform=wayland"),
         },
       ],
     },
