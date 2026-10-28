@@ -1379,10 +1379,17 @@ export class HybridWindowManager {
     if (workspace?.isTiled && workspace.shouldTile(event.window)) {
       this.onTileWindowMove(event, workspace);
       this.applyWorkspaceStackPolicy(workspace);
-      if (event.phase === "start") {
-        // The dragged tile stays above the others. A tab Chrome drags out
-        // never gets the focus (the button is down on the old window), so
-        // nothing else raises it.
+      if (event.phase === "start" && isClientDrag(event.window)) {
+        // A tab Chrome drags out never gets the focus by itself (the button
+        // is down on the old window): give it, so the old window, focused,
+        // does not keep coming back on top.
+        event.window.focus();
+      }
+      if (
+        (event.phase === "start" || event.phase === "update") &&
+        this.windowStack.front()?.id !== event.window.id
+      ) {
+        // The dragged tile stays above the others.
         this.windowStack.raise(event.window);
       }
       return;
