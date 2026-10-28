@@ -9,7 +9,10 @@
 //! The move ends when the left button comes up.
 
 use crate::{
-    grabs::move_grab::{point_snapshot, rect_snapshot},
+    grabs::{
+        follow_focus_grab::FollowFocusGrab,
+        move_grab::{point_snapshot, rect_snapshot},
+    },
     ssd::{
         PointerModifierStateSnapshot, WindowMoveEventSnapshot, WindowMovePhaseSnapshot,
         WindowMoveSourceSnapshot, WindowPositionSnapshot,
@@ -19,7 +22,8 @@ use crate::{
 use smithay::{
     desktop::Window,
     reexports::wayland_server::{protocol::wl_surface::WlSurface, Resource},
-    utils::{Logical, Point, Rectangle},
+    input::pointer::Focus,
+    utils::{Logical, Point, Rectangle, SERIAL_COUNTER},
 };
 use tracing::info;
 
@@ -105,6 +109,47 @@ impl ShojiWM {
         }
     }
 
+    /// Keep the held button's pointer coordinates counted from where the
+    /// pressed window is now, not where it was at the press: the tiling
+    /// moves it to make room (see `FollowFocusGrab`).
+    fn follow_pressed_window(&mut self) {
+        let Some(pointer) = self.seat.get_pointer() else {
+            return;
+        };
+        let Some(start_data) = pointer.grab_start_data() else {
+            return;
+        };
+        let Some((surface, press_origin)) = start_data.focus.clone() else {
+            return;
+        };
+        if !is_satellite_surface(&surface) {
+            return;
+        }
+        let Some(window) = self
+            .space
+            .elements()
+            .find(|window| {
+                window
+                    .toplevel()
+                    .is_some_and(|toplevel| toplevel.wl_surface() == &surface)
+            })
+            .cloned()
+        else {
+            return;
+        };
+        info!(
+            ?press_origin,
+            now = ?self.space.element_location(&window),
+            "client move: pointer follows the pressed window"
+        );
+        pointer.set_grab(
+            self,
+            FollowFocusGrab { start_data, window },
+            SERIAL_COUNTER.next_serial(),
+            Focus::Keep,
+        );
+    }
+
     fn start_client_move(&mut self, window: Window) -> bool {
         let Some(decoration) = self.window_decorations.get(&window) else {
             return false;
@@ -143,6 +188,7 @@ impl ShojiWM {
             // No config handles moves: nothing to do.
             return false;
         }
+        self.follow_pressed_window();
         self.client_move = Some(client_move);
         true
     }
