@@ -293,9 +293,10 @@ const DROP_EDGE = 0.2;
  * - its lower half: below it (it moves up);
  * - its upper half: above it (it moves down).
  *
- * The upper half of `anchorId`, the window the drag started over, edges
- * included, gives `side` null: the dragged window gets no cell and nothing
- * moves (a tab hovering over the Chrome window it left).
+ * The upper half of `anchorId`, the window the drag started over, gives
+ * `side` null: the dragged window gets no cell and nothing moves (a tab
+ * hovering over the Chrome window it left). Only its strips at the screen's
+ * left or right edge still open a column.
  *
  * Null over a gap or nothing: keep what there is.
  */
@@ -321,7 +322,14 @@ export function dropTarget(
     const down = (y - rect.y) / rect.height;
     if (id === anchorId && down < 0.5) {
       // Still over the upper half of the window the drag left: nothing
-      // changes until the pointer leaves it.
+      // changes until the pointer leaves it, except at a side that is the
+      // screen's edge: there a new column opens, as on any window.
+      if (across < DROP_EDGE && rect.x <= area.x + 1) {
+        return { targetId: id, side: "left" };
+      }
+      if (across > 1 - DROP_EDGE && rect.x + rect.width >= area.x + area.width - 1) {
+        return { targetId: id, side: "right" };
+      }
       return { targetId: id, side: null };
     }
     if (across < DROP_EDGE) {

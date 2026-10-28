@@ -203,9 +203,11 @@ test("dropTarget: the zones over main Chrome (1) and another app (2)", () => {
   // 1 on the left, 2 on the right; 3 is the dragged tab, not placed yet.
   const tree = open(WIDE, 2);
   const target = (x: number, y: number) => dropTarget(tree, "3", x, y, WIDE, GAP, "1");
-  // A: the upper half of the window the drag left, edges included.
+  // A: the upper half of the window the drag left, also its strip next to 2.
   assert.deepEqual(target(640, 300), { targetId: "1", side: null });
   assert.deepEqual(target(1250, 300), { targetId: "1", side: null });
+  // The far left edge: a new column there.
+  assert.deepEqual(target(60, 300), { targetId: "1", side: "left" });
   // B: its lower half.
   assert.deepEqual(target(640, 1100), { targetId: "1", side: "down" });
   // Between A and C: the left strip of 2.
