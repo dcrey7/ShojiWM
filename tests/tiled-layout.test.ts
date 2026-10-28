@@ -199,43 +199,53 @@ test("swap trades the places of two windows", () => {
   assert.deepEqual(leafIds(swapped), ["3", "4", "2", "1"]);
 });
 
-test("dropTarget: edges put a dragged window beside, the middle above or below", () => {
-  // 1 on the left, 2 (dragged) on the right. Without 2, 1 fills the screen.
+test("dropTarget: the zones over main Chrome (1) and another app (2)", () => {
+  // 1 on the left, 2 on the right; 3 is the dragged tab, not placed yet.
   const tree = open(WIDE, 2);
-  const target = (x: number, y: number) => dropTarget(tree, "2", x, y, WIDE, GAP);
-  assert.deepEqual(target(100, 700), { targetId: "1", side: "left" });
-  assert.deepEqual(target(2400, 700), { targetId: "1", side: "right" });
-  assert.deepEqual(target(1280, 300), { targetId: "1", side: "up" });
-  assert.deepEqual(target(1280, 1100), { targetId: "1", side: "down" });
+  const target = (x: number, y: number) => dropTarget(tree, "3", x, y, WIDE, GAP, "1");
+  // A: the upper half of the window the drag left, edges included.
+  assert.deepEqual(target(640, 300), { targetId: "1", side: null });
+  assert.deepEqual(target(1250, 300), { targetId: "1", side: null });
+  // B: its lower half.
+  assert.deepEqual(target(640, 1100), { targetId: "1", side: "down" });
+  // Between A and C: the left strip of 2.
+  assert.deepEqual(target(1350, 300), { targetId: "2", side: "left" });
+  // C and D: the upper and lower half of 2.
+  assert.deepEqual(target(1900, 300), { targetId: "2", side: "up" });
+  assert.deepEqual(target(1900, 1100), { targetId: "2", side: "down" });
+  // The far right edge.
+  assert.deepEqual(target(2500, 300), { targetId: "2", side: "right" });
+  // The gap between them: keep what there is.
+  assert.equal(target(1280, 300), null);
 });
 
-test("dropTarget rightOrDown: the window under the pointer stays, the tab goes right or below", () => {
-  const tree = open(WIDE, 2);
-  const target = (x: number, y: number) =>
-    dropTarget(tree, "2", x, y, WIDE, GAP, "rightOrDown");
-  // Pulled out at the tab strip: right.
-  assert.deepEqual(target(1280, 60), { targetId: "1", side: "right" });
-  // Dragged down: below. Never left or up.
-  assert.deepEqual(target(1280, 1100), { targetId: "1", side: "down" });
-  assert.deepEqual(target(100, 700), { targetId: "1", side: "down" });
-  assert.deepEqual(target(2400, 100), { targetId: "1", side: "right" });
+test("moveBeside: between two columns gives three equal columns", () => {
+  const three = moveBeside(open(WIDE, 2), "3", "2", "left", WIDE, GAP);
+  assert.deepEqual(leafIds(three), ["1", "3", "2"]);
+  const widths = [...layout(three, WIDE, GAP).values()].map((rect) => Math.round(rect.width));
+  assert.deepEqual(widths, [845, 845, 845]);
 });
 
-test("moveBeside: a dragged window splits the window under the pointer", () => {
-  // Below 1: 1 and 3 share the left column, 2 keeps the right.
-  const below = moveBeside(open(WIDE, 3), "3", "1", "down", WIDE, GAP);
+test("moveBeside: below and above split the window under the pointer", () => {
+  // B: 1 moves up, the tab takes the bottom left.
+  const below = moveBeside(open(WIDE, 2), "3", "1", "down", WIDE, GAP);
   assert.deepEqual(rects(below), {
     1: [0, 0, 1274, 714],
     3: [0, 726, 1274, 714],
     2: [1286, 0, 1274, 1440],
   });
-  // Right of 1: 1 keeps the left edge.
-  const right = moveBeside(open(WIDE, 2), "2", "1", "right", WIDE, GAP);
-  assert.deepEqual(leafIds(right), ["1", "2"]);
-  // The answer depends on the pointer only: after the move it is the same,
-  // so the layout does not flip back and forth.
-  const again = dropTarget(below, "3", 640, 1100, WIDE, GAP, "rightOrDown");
-  assert.deepEqual(again, dropTarget(open(WIDE, 3), "3", 640, 1100, WIDE, GAP, "rightOrDown"));
+  // C: the tab takes the top right, 2 moves down.
+  const above = moveBeside(open(WIDE, 2), "3", "2", "up", WIDE, GAP);
+  assert.deepEqual(rects(above)[3], [1286, 0, 1274, 714]);
+  assert.deepEqual(rects(above)[2], [1286, 726, 1274, 714]);
+});
+
+test("moveBeside: a new column goes beside the whole stack", () => {
+  // 1 | (2 over 3); 4 left of 3 makes a full-height column before the stack.
+  const tree = open(WIDE, 3);
+  const next = moveBeside(tree, "4", "3", "left", WIDE, GAP);
+  assert.deepEqual(leafIds(next), ["1", "4", "2", "3"]);
+  assert.equal(Math.round(rects(next)[4][3]), 1440);
 });
 
 test("moveBeside keeps the tree when a window would get too small", () => {

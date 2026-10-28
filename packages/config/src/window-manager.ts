@@ -40,6 +40,7 @@ import {
   leafIds,
   moveBeside as moveTileBeside,
   neighbour as tileNeighbour,
+  remove as removeTile,
   removeAndSettle,
   resize as resizeTileSplit,
   resizeSoloShare,
@@ -178,6 +179,8 @@ export const WINDOW_STATE_SNAP_MONITOR = createWindowState<string | null>(
 const OPEN_CLOSE_ANIMATION_DURATION = seconds(0.5);
 /** The close lamp's run plus a little slack, so the snapshot outlives it. */
 const CLOSE_LAMP_SLACK_MS = 120;
+/** A Chrome tab window whose drag never starts takes a tile after this. */
+const CLIENT_DRAG_PLACE_WAIT_MS = 2000;
 /** A dragged tab window that merges back into Chrome fades out this fast. */
 const TAB_DRAG_CLOSE_FADE_MS = 120;
 
@@ -4505,6 +4508,22 @@ export class Workspace {
   /** Windows of a restored tiled layout that have not come back yet. */
   private awaitedTreeIds = new Set<string>();
   private draggingWindowId: string | null = null;
+  /**
+   * Tiled mode, while a tile is dragged: the layout without it, taken at the
+   * first move. Each move is this layout plus at most one new place, so a
+   * place given up gives the windows back exactly as they were.
+   */
+  private dragBaseTree: TileTree | undefined = undefined;
+  /** The window the drag started over (see `dropTarget`), once known. */
+  private dragAnchorId: string | null = null;
+  /** The dragged tile has no cell now (over the anchor's upper half). */
+  private dragDetached = false;
+  /**
+   * Chrome tab windows (`clientDrag`) with their first time seen. They take
+   * no cell before their drag places them, so opening one moves nothing; a
+   * drag that never comes gives up after CLIENT_DRAG_PLACE_WAIT_MS.
+   */
+  private readonly unplacedClientDrag = new Map<string, number>();
   // Layout slot reserved for the tile being dragged (the gap opened in the row).
   // Captured during applyLayout so the bar can preview where the tile will land.
   private lastDraggingSlotRect: ManagedWindowRect | null = null;
@@ -4736,10 +4755,12 @@ export class Workspace {
       this.tileWidthByWindowId.delete(window.id);
       this.userSizedTileIds.delete(window.id);
       this.initialTileStateByWindowId.delete(window.id);
+      this.unplacedClientDrag.delete(window.id);
       this.tileReorderTokenByWindowId.delete(window.id);
       window.state[WINDOW_STATE_TILE_REORDERING].set(false);
       if (this.draggingWindowId === window.id) {
         this.draggingWindowId = null;
+        this.resetTreeDrag();
         window.state[WINDOW_STATE_TILE_DRAGGING].set(false);
       }
       let nextFocus: WaylandWindow | null = null;
@@ -5824,7 +5845,8 @@ export class Workspace {
       area.width = Math.round(area.width * this.soloShare);
     }
     const cells = tileLayout(this.tree, area, TILE_GAP);
-    return tileable.map((window) => {
+    // A dragged tab with no cell yet keeps following the pointer.
+    return tileable.filter((window) => cells.has(window.id)).map((window) => {
       const rect = window.state[WINDOW_STATE_FULLSCREEN]()
         ? this.fullscreenRootRect(window)
         : this.fitTileInCell(window, cells.get(window.id) ?? area);
@@ -5881,7 +5903,11 @@ export class Workspace {
     for (const id of leaving) {
       tree = removeAndSettle(tree, id, this.tiledArea(), TILE_GAP);
     }
-    const missing = tileable.filter((window) => !hasLeaf(tree, window.id));
+    const nowMs = Date.now();
+    const missing = tileable.filter(
+      (window) =>
+        !hasLeaf(tree, window.id) && !this.waitsForDragPlace(window, nowMs),
+    );
     const wasSolo = tree?.kind === "leaf";
     const remembered =
       missing.length > 0
@@ -6281,6 +6307,7 @@ export class Workspace {
     if (!this.shouldTile(window)) {
       return;
     }
+    this.resetTreeDrag();
     // A dragged tile leaves its column and moves as a column of its own.
     this.popOutOfColumn(window);
     this.activeWindowId = window.id;
@@ -6306,6 +6333,7 @@ export class Workspace {
     if (!this.hasWindow(window)) {
       this.windows.push(window);
     }
+    this.resetTreeDrag();
     const visible = this.isActive();
     this.activeWindowId = window.id;
     this.draggingWindowId = window.id;
@@ -6362,6 +6390,7 @@ export class Workspace {
     if (this.draggingWindowId !== window.id) {
       return;
     }
+    this.finishTreeDrag(window);
     this.draggingWindowId = null;
     window.state[WINDOW_STATE_TILE_DRAGGING].set(false);
     this.syncWindowVisibleOutputs(window);
@@ -7144,30 +7173,91 @@ export class Workspace {
     pointerX: number,
     pointerY: number,
   ) {
-    if (!hasLeaf(this.tree, window.id)) {
-      return;
+    const area = this.tiledArea();
+    if (this.dragBaseTree === undefined) {
+      this.dragBaseTree = removeTile(this.tree, window.id);
+      this.dragAnchorId =
+        tileDropTarget(this.dragBaseTree, window.id, pointerX, pointerY, area, TILE_GAP)
+          ?.targetId ?? null;
     }
-    const area = plainRect(this.tileViewportRect());
+    const base = this.dragBaseTree;
     const target = tileDropTarget(
-      this.tree,
+      base,
       window.id,
       pointerX,
       pointerY,
       area,
       TILE_GAP,
-      // A tab pulled out of Chrome: the window it came from stays put.
-      isClientDrag(window) ? "rightOrDown" : "all",
+      this.dragAnchorId,
     );
-    if (target) {
-      this.tree = moveTileBeside(
+    if (!target) {
+      return;
+    }
+    if (target.side === null) {
+      this.tree = base;
+      this.dragDetached = true;
+      return;
+    }
+    const next = moveTileBeside(
+      base,
+      window.id,
+      target.targetId,
+      target.side,
+      area,
+      TILE_GAP,
+    );
+    if (hasLeaf(next, window.id)) {
+      this.tree = next;
+      this.dragDetached = false;
+    }
+  }
+
+  private resetTreeDrag() {
+    this.dragBaseTree = undefined;
+    this.dragAnchorId = null;
+    this.dragDetached = false;
+  }
+
+  /**
+   * The drag ends. Dropped with no cell (over the anchor's upper half, off
+   * Chrome's tab strip): a new column right of the anchor.
+   */
+  private finishTreeDrag(window: WaylandWindow) {
+    this.unplacedClientDrag.delete(window.id);
+    if (this.mode === "tiled" && this.dragDetached && this.dragAnchorId) {
+      const placed = moveTileBeside(
         this.tree,
         window.id,
-        target.targetId,
-        target.side,
-        area,
+        this.dragAnchorId,
+        "right",
+        this.tiledArea(),
         TILE_GAP,
       );
+      if (hasLeaf(placed, window.id)) {
+        this.tree = placed;
+      }
     }
+    this.resetTreeDrag();
+  }
+
+  /** True while a Chrome tab window waits for its drag to place it. */
+  private waitsForDragPlace(window: WaylandWindow, nowMs: number): boolean {
+    if (!isClientDrag(window)) {
+      return false;
+    }
+    if (this.draggingWindowId === window.id) {
+      return this.dragDetached;
+    }
+    let seenAt = this.unplacedClientDrag.get(window.id);
+    if (seenAt === undefined) {
+      seenAt = nowMs;
+      this.unplacedClientDrag.set(window.id, seenAt);
+    }
+    if (nowMs - seenAt > CLIENT_DRAG_PLACE_WAIT_MS) {
+      this.unplacedClientDrag.delete(window.id);
+      return false;
+    }
+    return !hasLeaf(this.tree, window.id);
   }
 
   private tileInsertionIndexForPointer(

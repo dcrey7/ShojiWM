@@ -278,24 +278,26 @@ export function canInsert(
 }
 
 /**
- * Dragging a window over another one: nearer the left or right edge than this
- * (share of the width) puts it beside; otherwise above or below.
+ * Dragging a window over another one: this share of the width at its left
+ * and right sides makes a new column there; between two windows the two
+ * strips meet, so the pointer there puts the dragged window between them.
  */
-const DROP_EDGE = 0.25;
+const DROP_EDGE = 0.2;
 
 /**
- * Which sides of the window under the pointer a dragged window can take.
- * `all`: beside near the left or right edge, else above or below.
- * `rightOrDown`: the window under the pointer stays where it is and the
- * dragged one goes to its right or below it (a tab pulled out of Chrome).
- */
-export type DropSides = "all" | "rightOrDown";
-
-/**
- * Where a dragged window `dragId` lands for the pointer at `x`/`y`: the
- * window under the pointer and the side of it. The windows are laid out
- * without the dragged one, so the answer depends on the pointer only and
- * a move cannot flip the next answer back. Null over a gap or nothing.
+ * Where a dragged window `dragId` goes for the pointer at `x`/`y`, from the
+ * window under the pointer, with the windows laid out without the dragged
+ * one (so the answer depends on the pointer only):
+ *
+ * - near its left or right side: a new column on that side;
+ * - its lower half: below it (it moves up);
+ * - its upper half: above it (it moves down).
+ *
+ * The upper half of `anchorId`, the window the drag started over, edges
+ * included, gives `side` null: the dragged window gets no cell and nothing
+ * moves (a tab hovering over the Chrome window it left).
+ *
+ * Null over a gap or nothing: keep what there is.
  */
 export function dropTarget(
   tree: TileTree,
@@ -304,8 +306,8 @@ export function dropTarget(
   y: number,
   area: TileRect,
   gap: number,
-  sides: DropSides = "all",
-): { targetId: string; side: TileDirection } | null {
+  anchorId: string | null = null,
+): { targetId: string; side: TileDirection | null } | null {
   for (const [id, rect] of layout(remove(tree, dragId), area, gap)) {
     if (
       x < rect.x ||
@@ -317,28 +319,93 @@ export function dropTarget(
     }
     const across = (x - rect.x) / rect.width;
     const down = (y - rect.y) / rect.height;
-    let side: TileDirection;
-    if (sides === "rightOrDown") {
-      // Above the diagonal from the top-left corner: right; below it: down.
-      side = down > across ? "down" : "right";
-    } else {
-      side =
-        across < DROP_EDGE
-          ? "left"
-          : across > 1 - DROP_EDGE
-            ? "right"
-            : down < 0.5
-              ? "up"
-              : "down";
+    if (id === anchorId && down < 0.5) {
+      // Still over the upper half of the window the drag left: nothing
+      // changes until the pointer leaves it.
+      return { targetId: id, side: null };
     }
-    return { targetId: id, side };
+    if (across < DROP_EDGE) {
+      return { targetId: id, side: "left" };
+    }
+    if (across > 1 - DROP_EDGE) {
+      return { targetId: id, side: "right" };
+    }
+    if (down >= 0.5) {
+      return { targetId: id, side: "down" };
+    }
+    return { targetId: id, side: "up" };
   }
   return null;
 }
 
+/** The nodes from `root` down to the leaf `id`, or null when it is missing. */
+function pathTo(root: TileNode, id: string): TileNode[] | null {
+  if (root.kind === "leaf") {
+    return root.id === id ? [root] : null;
+  }
+  const below = pathTo(root.first, id) ?? pathTo(root.second, id);
+  return below ? [root, ...below] : null;
+}
+
+/** `root` with the node `target` (the same object) swapped for `next`. */
+function replaceNode(root: TileNode, target: TileNode, next: TileNode): TileNode {
+  if (root === target) {
+    return next;
+  }
+  if (root.kind === "leaf") {
+    return root;
+  }
+  return {
+    ...root,
+    first: replaceNode(root.first, target, next),
+    second: replaceNode(root.second, target, next),
+  };
+}
+
+/** How many columns one run of row splits holds (a stack counts as one). */
+function rowColumns(node: TileNode): number {
+  return node.kind === "split" && node.direction === "row"
+    ? rowColumns(node.first) + rowColumns(node.second)
+    : 1;
+}
+
 /**
- * Take `id` out and put it on `side` of `targetId`, in half of the target's
- * cell. The tree stays as it was when `id` or `targetId` is missing, or a
+ * Give every column of a run of row splits `width` wide the same width,
+ * gaps counted (a ratio splits the width minus one gap).
+ */
+function equalizeColumns(node: TileNode, width: number, gap: number): TileNode {
+  if (node.kind !== "split" || node.direction !== "row") {
+    return node;
+  }
+  const left = rowColumns(node.first);
+  const count = left + rowColumns(node.second);
+  const column = (width - (count - 1) * gap) / count;
+  const firstWidth = left * column + (left - 1) * gap;
+  const available = Math.max(1, width - gap);
+  return {
+    ...node,
+    ratio: firstWidth / available,
+    first: equalizeColumns(node.first, firstWidth, gap),
+    second: equalizeColumns(node.second, available - firstWidth, gap),
+  };
+}
+
+/** The rect of `path`'s last node, walking down from `area`. */
+function rectAlong(path: TileNode[], area: TileRect, gap: number): TileRect {
+  let rect = area;
+  for (let index = 0; index + 1 < path.length; index++) {
+    const split = path[index] as TileSplit;
+    const [first, second] = splitRect(rect, split.direction, split.ratio, gap);
+    rect = split.first === path[index + 1] ? first : second;
+  }
+  return rect;
+}
+
+/**
+ * Put `id` on `side` of `targetId` (taking it out first when it is in the
+ * tree). Left or right: a new column beside the target's whole column, and
+ * the columns of that row share the width equally. Up or down: half of the
+ * target's cell. The tree stays as it was when `targetId` is missing or a
  * window would get under the minimum size.
  */
 export function moveBeside(
@@ -350,24 +417,53 @@ export function moveBeside(
   gap: number,
   limits: TileLimits = DEFAULT_TILE_LIMITS,
 ): TileTree {
-  if (id === targetId || !hasLeaf(tree, id)) {
+  if (id === targetId) {
     return tree;
   }
   const without = remove(tree, id);
-  if (!without || !hasLeaf(without, targetId)) {
+  const path = without ? pathTo(without, targetId) : null;
+  if (!without || !path) {
     return tree;
   }
   const moved: TileLeaf = { kind: "leaf", id };
-  const target: TileLeaf = { kind: "leaf", id: targetId };
-  const before = side === "left" || side === "up";
-  const split: TileSplit = {
-    kind: "split",
-    direction: side === "left" || side === "right" ? "row" : "column",
-    ratio: 0.5,
-    first: before ? moved : target,
-    second: before ? target : moved,
+  const besideOf = (node: TileNode, direction: SplitDirection): TileSplit => {
+    const before = side === "left" || side === "up";
+    return {
+      kind: "split",
+      direction,
+      ratio: 0.5,
+      first: before ? moved : node,
+      second: before ? node : moved,
+    };
   };
-  const next = replaceLeaf(without, targetId, split);
+
+  let next: TileNode;
+  if (side === "up" || side === "down") {
+    const leaf = path[path.length - 1];
+    next = replaceNode(without, leaf, besideOf(leaf, "column"));
+  } else {
+    // The target's column: up through the splits that stack it.
+    let columnIndex = path.length - 1;
+    while (
+      columnIndex > 0 &&
+      (path[columnIndex - 1] as TileSplit).direction === "column"
+    ) {
+      columnIndex--;
+    }
+    // The run of columns it sits in: up through the row splits.
+    let rowIndex = columnIndex;
+    while (rowIndex > 0 && (path[rowIndex - 1] as TileSplit).direction === "row") {
+      rowIndex--;
+    }
+    const column = path[columnIndex];
+    const row = path[rowIndex];
+    const newRow = equalizeColumns(
+      replaceNode(row, column, besideOf(column, "row")),
+      rectAlong(path.slice(0, rowIndex + 1), area, gap).width,
+      gap,
+    );
+    next = replaceNode(without, row, newRow);
+  }
   return fitsMinSize(next, area, gap, limits) ? next : tree;
 }
 
