@@ -189,10 +189,14 @@ const TAB_DRAG_GRAB_MARGIN = 40;
 const TAB_DRAG_GRAB_MAX_Y = 30;
 /** A Chrome tab window whose drag never starts takes a tile after this. */
 const CLIENT_DRAG_PLACE_WAIT_MS = 2000;
-/** A dragged tab window that merges back into Chrome fades out this fast, */
-const TAB_DRAG_CLOSE_FADE_MS = 150;
-/** ... shrinking by this share of its size. */
-const TAB_DRAG_CLOSE_SHRINK = 0.15;
+/** A dragged tab window dropped back into Chrome shrinks into its tab this fast, */
+const TAB_DRAG_SHRINK_MS = 200;
+/** ... speeding up as it goes in, */
+const TAB_DRAG_SHRINK_EASING = cubicBezier(0.4, 0, 1, 1);
+/** ... and fading only at the end. */
+const TAB_DRAG_SHRINK_FADE_EASING = cubicBezier(0.7, 0, 1, 0.6);
+/** The pointer of each dragged tab window's last move, for its shrink. */
+const lastTabDragPointer = new Map<string, { x: number; y: number }>();
 /** A dragged-out tab window grows out of its tab this fast, */
 const TAB_DRAG_GROW_MS = 220;
 /** ... fading in over the first part of it, */
@@ -1388,8 +1392,11 @@ export class HybridWindowManager {
   }
 
   public onWindowMove(event: WindowMoveEvent) {
-    if (event.phase === "start" && isClientDrag(event.window)) {
-      growTabWindow(event);
+    if (isClientDrag(event.window)) {
+      if (event.phase === "start") {
+        growTabWindow(event);
+      }
+      lastTabDragPointer.set(event.window.id, event.currentPointer);
     }
     const workspace = this.findWorkspaceForWindow(event.window);
     if (workspace?.isTiled && workspace.shouldTile(event.window)) {
@@ -8319,23 +8326,43 @@ function growTabWindow(event: WindowMoveEvent): void {
 function scheduleCloseAnimation(window: WaylandWindow): void {
   if (isClientDrag(window)) {
     grownTabWindowIds.delete(window.id);
-    // A dragged tab window dropped back into Chrome: its tab merges into the
-    // other window, so it shrinks a little to its middle and fades, not the
-    // lamp.
+    const pointer = lastTabDragPointer.get(window.id);
+    lastTabDragPointer.delete(window.id);
+    // A dragged tab window dropped back into Chrome goes back into the tab:
+    // the reverse of `growTabWindow`, it shrinks to a tab-sized strip under
+    // the pointer (where Chrome shows the tab now) and fades at the end.
     const rect = window.rect;
-    const shrinkX = read(rect.width) * TAB_DRAG_CLOSE_SHRINK;
-    const shrinkY = read(rect.height) * TAB_DRAG_CLOSE_SHRINK;
+    const x = read(rect.x);
+    const y = read(rect.y);
+    const width = read(rect.width);
+    const height = read(rect.height);
+    const tabWidth = Math.min(TAB_DRAG_TAB_WIDTH, width);
+    const tabHeight = Math.min(TAB_DRAG_TAB_HEIGHT, height);
+    const grabX = pointer ? pointer.x - x : width / 2;
+    const grabY = pointer ? pointer.y - y : tabHeight / 2;
     window.scheduleAnimation({
       channel: CLOSE_ANIMATION_CHANNEL,
       rect: {
         from: { x: 0, y: 0, width: 0, height: 0 },
-        to: { x: shrinkX / 2, y: shrinkY / 2, width: -shrinkX, height: -shrinkY },
-        duration: TAB_DRAG_CLOSE_FADE_MS,
+        to: {
+          x: grabX - tabWidth / 2,
+          y: grabY - tabHeight / 2,
+          width: tabWidth - width,
+          height: tabHeight - height,
+        },
+        duration: TAB_DRAG_SHRINK_MS,
+        easing: TAB_DRAG_SHRINK_EASING,
         mode: "add",
       },
-      opacity: { from: 1, to: 0, duration: TAB_DRAG_CLOSE_FADE_MS, mode: "multiply" },
+      opacity: {
+        from: 1,
+        to: 0,
+        duration: TAB_DRAG_SHRINK_MS,
+        easing: TAB_DRAG_SHRINK_FADE_EASING,
+        mode: "multiply",
+      },
     });
-    window.setCloseAnimationDuration(TAB_DRAG_CLOSE_FADE_MS);
+    window.setCloseAnimationDuration(TAB_DRAG_SHRINK_MS);
     return;
   }
   // The window pours into its taskbar icon, like a minimize (Magic Lamp).
