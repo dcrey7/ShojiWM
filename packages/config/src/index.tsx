@@ -45,6 +45,7 @@ import {
   WINDOW_STATE_FULLSCREEN,
   WINDOW_STATE_MINIMIZED,
   WINDOW_STATE_MINIMIZE_VISUAL_IDLE,
+  WINDOW_STATE_TAB_DRAG_SCALE,
   WINDOW_STATE_TILE_DRAGGING,
   WINDOW_STATE_TILE_REORDERING,
   WINDOW_STATE_TILED,
@@ -1469,6 +1470,12 @@ COMPOSITOR.window.composition = (window: WaylandWindow) => {
       height: read(rect.height),
     };
   });
+  // A tab Chrome drags out shows as a live miniature (see
+  // WINDOW_STATE_TAB_DRAG_SCALE): scaled from its top-left corner.
+  const tabDragTransform = computed(() => {
+    const scale = window.state[WINDOW_STATE_TAB_DRAG_SCALE]() ?? 1;
+    return { origin: { x: 0, y: 0 }, scale };
+  });
   const forceRectSize = computed(() => {
     // Read the signals so this updates when they change.
     window.isResizable();
@@ -1661,6 +1668,7 @@ COMPOSITOR.window.composition = (window: WaylandWindow) => {
         visibleOutputs={window.state[WINDOW_STATE_VISIBLE_OUTPUTS]}
         opacity={workspaceOpacity}
         forceRectSize={forceRectSize}
+        transform={tabDragTransform}
         tiled={tiled}
         idle={idle}
         interactive={inactive((value) => !value)}
@@ -1684,6 +1692,7 @@ COMPOSITOR.window.composition = (window: WaylandWindow) => {
         visibleOutputs={window.state[WINDOW_STATE_VISIBLE_OUTPUTS]}
         opacity={workspaceOpacity}
         forceRectSize={forceRectSize}
+        transform={tabDragTransform}
         tiled={tiled}
         idle={idle}
         interactive={inactive((value) => !value)}
@@ -1719,6 +1728,7 @@ COMPOSITOR.window.composition = (window: WaylandWindow) => {
       visibleOutputs={window.state[WINDOW_STATE_VISIBLE_OUTPUTS]}
       opacity={workspaceOpacity}
       forceRectSize={forceRectSize}
+      transform={tabDragTransform}
       tiled={tiled}
       idle={idle}
       interactive={inactive((value) => !value)}

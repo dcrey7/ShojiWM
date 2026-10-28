@@ -132,6 +132,17 @@ export const WINDOW_STATE_WORKSPACE_OPACITY = createWindowState<number>(
     default: 1,
   },
 );
+/**
+ * A tab Chrome drags out is drawn at this scale (top-left origin) while it
+ * moves: it keeps Chrome's own size, so Chrome never redraws mid-drag, and
+ * shows as a live miniature. Null when not scaled.
+ */
+export const WINDOW_STATE_TAB_DRAG_SCALE = createWindowState<number | null>(
+  "tabDragScale",
+  {
+    default: null,
+  },
+);
 export const WINDOW_STATE_TILE_DRAGGING = createWindowState<boolean>(
   "tileDragging",
   {
@@ -198,7 +209,9 @@ const TAB_DRAG_SHRINK_FADE_EASING = cubicBezier(0.7, 0, 1, 0.6);
 /** The pointer of each dragged tab window's last move, for its shrink. */
 const lastTabDragPointer = new Map<string, { x: number; y: number }>();
 /** A dragged-out tab window grows out of its tab this fast, */
-const TAB_DRAG_GROW_MS = 220;
+const TAB_DRAG_GROW_MS = 280;
+/** ... easing out without a bounce, */
+const TAB_DRAG_GROW_EASING = cubicBezier(0.2, 0.8, 0.2, 1);
 /** ... fading in over the first part of it, */
 const TAB_DRAG_GROW_FADE_MS = 90;
 /** ... from a strip this big (about one Chrome tab). */
@@ -217,6 +230,11 @@ function noteTabDrag(event: Record<string, unknown>) {
     tabDragDebugEvents.shift();
   }
 }
+/** Each dragged tab window's size, scale and grab point, fixed at its start. */
+const tabDragGeometry = new Map<
+  string,
+  { width: number; height: number; scale: number; grabX: number; grabY: number }
+>();
 /** Tab windows that came out of their tab already (see `growTabWindow`). */
 const grownTabWindowIds = new Set<string>();
 
@@ -1419,23 +1437,47 @@ export class HybridWindowManager {
    * event goes to the layout and to the jelly drag, so both see this rect.
    */
   public tabDragMoveEvent(event: WindowMoveEvent): WindowMoveEvent {
-    if (!isClientDrag(event.window)) {
+    const window = event.window;
+    if (!isClientDrag(window)) {
       return event;
     }
-    const screen = this.findWorkspaceForWindow(event.window)?.tiledViewport();
-    if (!screen) {
+    const workspace = this.findWorkspaceForWindow(window);
+    if (!workspace) {
       return event;
     }
-    const width = Math.round(Math.max(TAB_DRAG_MIN_WIDTH, screen.width * TAB_DRAG_SHARE));
-    const height = Math.round(Math.max(TAB_DRAG_MIN_HEIGHT, screen.height * TAB_DRAG_SHARE));
-    const grabX = Math.min(
-      Math.max(event.currentPointer.x - event.currentRect.x, TAB_DRAG_GRAB_MARGIN),
-      width - TAB_DRAG_GRAB_MARGIN,
-    );
-    const grabY = Math.min(
-      Math.max(event.currentPointer.y - event.currentRect.y, 0),
-      TAB_DRAG_GRAB_MAX_Y,
-    );
+    let geometry = tabDragGeometry.get(window.id);
+    if (!geometry) {
+      const screen = workspace.tiledViewport();
+      // Chrome makes the tab window as big as the window the tab left.
+      const source = workspace.tileAt(
+        event.currentPointer.x,
+        event.currentPointer.y,
+        window.id,
+      );
+      const width = source ? read(source.rect.width) : screen.width / 2;
+      const height = source ? read(source.rect.height) : screen.height;
+      const scale = Math.max(
+        TAB_DRAG_MIN_WIDTH / width,
+        (screen.width * TAB_DRAG_SHARE) / width,
+      );
+      // The pointer holds the miniature where it held the tab, kept inside.
+      const grabX = Math.min(
+        Math.max(event.currentPointer.x - event.currentRect.x, TAB_DRAG_GRAB_MARGIN),
+        width * scale - TAB_DRAG_GRAB_MARGIN,
+      );
+      const grabY = Math.min(
+        Math.max(event.currentPointer.y - event.currentRect.y, 0),
+        TAB_DRAG_GRAB_MAX_Y,
+      );
+      geometry = { width, height, scale, grabX, grabY };
+      tabDragGeometry.set(window.id, geometry);
+    }
+    const { width, height, scale, grabX, grabY } = geometry;
+    if (window.state[WINDOW_STATE_TAB_DRAG_SCALE]() !== scale) {
+      window.state[WINDOW_STATE_TAB_DRAG_SCALE].set(scale);
+    }
+    // The rect is Chrome's full size; drawn scaled from its top-left corner,
+    // its grab point lands under the pointer.
     const around = (pointer: { x: number; y: number }) => ({
       x: pointer.x - grabX,
       y: pointer.y - grabY,
@@ -1447,6 +1489,27 @@ export class HybridWindowManager {
       startRect: around(event.startPointer),
       currentRect: around(event.currentPointer),
     };
+  }
+
+  /**
+   * The drop: the scaled tab window becomes a plain window of the size it
+   * showed, so its move into a cell starts from what you saw.
+   */
+  private unscaleTabWindow(window: WaylandWindow) {
+    const scale = window.state[WINDOW_STATE_TAB_DRAG_SCALE]();
+    tabDragGeometry.delete(window.id);
+    if (scale === null) {
+      return;
+    }
+    const rect = window.state[WINDOW_STATE_RECT]();
+    stopRectAnimation(window, WINDOW_STATE_RECT);
+    window.state[WINDOW_STATE_RECT].set({
+      x: read(rect.x),
+      y: read(rect.y),
+      width: read(rect.width) * scale,
+      height: read(rect.height) * scale,
+    });
+    window.state[WINDOW_STATE_TAB_DRAG_SCALE].set(null);
   }
 
   public onWindowMove(event: WindowMoveEvent) {
@@ -1469,6 +1532,7 @@ export class HybridWindowManager {
       if (event.phase === "end" || event.phase === "cancel") {
         // Dropped: an ordinary window from now on.
         this.liveTabWindows.delete(event.window);
+        this.unscaleTabWindow(event.window);
       }
       lastTabDragPointer.set(event.window.id, event.currentPointer);
     }
@@ -6039,6 +6103,27 @@ export class Workspace {
     return plainRect(this.tileViewportRect());
   }
 
+  /** The tile whose rect holds the point, not counting `excludeId`. */
+  public tileAt(x: number, y: number, excludeId: string): WaylandWindow | null {
+    for (const window of this.tileableWindows()) {
+      if (window.id === excludeId) {
+        continue;
+      }
+      const rect = window.state[WINDOW_STATE_RECT]();
+      const left = read(rect.x);
+      const top = read(rect.y);
+      if (
+        x >= left &&
+        x < left + read(rect.width) &&
+        y >= top &&
+        y < top + read(rect.height)
+      ) {
+        return window;
+      }
+    }
+    return null;
+  }
+
   /** The area the tiles fill, for sizing things against the screen. */
   public tiledViewport(): TileRect {
     return this.tiledArea();
@@ -8368,13 +8453,15 @@ function growTabWindow(event: WindowMoveEvent): void {
     return;
   }
   grownTabWindowIds.add(window.id);
+  // In the window's own (unscaled) size; the drag scale shrinks it after.
+  const scale = window.state[WINDOW_STATE_TAB_DRAG_SCALE]() ?? 1;
   const rect = event.currentRect;
   const width = rect.width;
   const height = rect.height;
-  const tabWidth = Math.min(TAB_DRAG_TAB_WIDTH, width);
-  const tabHeight = Math.min(TAB_DRAG_TAB_HEIGHT, height);
-  const grabX = event.currentPointer.x - rect.x;
-  const grabY = event.currentPointer.y - rect.y;
+  const tabWidth = Math.min(TAB_DRAG_TAB_WIDTH / scale, width);
+  const tabHeight = Math.min(TAB_DRAG_TAB_HEIGHT / scale, height);
+  const grabX = (event.currentPointer.x - rect.x) / scale;
+  const grabY = (event.currentPointer.y - rect.y) / scale;
   const tabLeft = Math.min(Math.max(grabX - tabWidth / 2, 0), width - tabWidth);
   const tabTop = Math.min(Math.max(grabY - tabHeight / 2, 0), height - tabHeight);
   window.scheduleAnimation({
@@ -8388,7 +8475,7 @@ function growTabWindow(event: WindowMoveEvent): void {
       },
       to: { x: 0, y: 0, width: 0, height: 0 },
       duration: TAB_DRAG_GROW_MS,
-      easing: WINDOW_OPEN_EASING,
+      easing: TAB_DRAG_GROW_EASING,
       mode: "add",
     },
     opacity: {
@@ -8408,15 +8495,18 @@ function scheduleCloseAnimation(window: WaylandWindow): void {
     // A dragged tab window dropped back into Chrome goes back into the tab:
     // the reverse of `growTabWindow`, it shrinks to a tab-sized strip under
     // the pointer (where Chrome shows the tab now) and fades at the end.
+    tabDragGeometry.delete(window.id);
+    const scale = window.state[WINDOW_STATE_TAB_DRAG_SCALE]() ?? 1;
     const rect = window.rect;
     const x = read(rect.x);
     const y = read(rect.y);
     const width = read(rect.width);
     const height = read(rect.height);
-    const tabWidth = Math.min(TAB_DRAG_TAB_WIDTH, width);
-    const tabHeight = Math.min(TAB_DRAG_TAB_HEIGHT, height);
-    const grabX = pointer ? pointer.x - x : width / 2;
-    const grabY = pointer ? pointer.y - y : tabHeight / 2;
+    // In the window's own (unscaled) size, like the grow.
+    const tabWidth = Math.min(TAB_DRAG_TAB_WIDTH / scale, width);
+    const tabHeight = Math.min(TAB_DRAG_TAB_HEIGHT / scale, height);
+    const grabX = pointer ? (pointer.x - x) / scale : width / 2;
+    const grabY = pointer ? (pointer.y - y) / scale : tabHeight / 2;
     window.scheduleAnimation({
       channel: CLOSE_ANIMATION_CHANNEL,
       rect: {
