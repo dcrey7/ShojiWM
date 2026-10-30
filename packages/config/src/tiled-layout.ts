@@ -283,6 +283,11 @@ export function canInsert(
  * strips meet, so the pointer there puts the dragged window between them.
  */
 const DROP_EDGE = 0.2;
+/**
+ * The share of a merge target's height, from its top, where a dragged tab
+ * hovers to go into its tab row (see `dropTarget`).
+ */
+const MERGE_BAND = 0.25;
 
 /**
  * Where a dragged window `dragId` goes for the pointer at `x`/`y`, from the
@@ -298,6 +303,10 @@ const DROP_EDGE = 0.2;
  * hovering over the Chrome window it left). Only its strips at the screen's
  * left or right edge still open a column.
  *
+ * The upper quarter of a window in `mergeIds` (another Chrome window) is the
+ * same: side null, nothing moves, so its tab row stays under the pointer and
+ * Chrome can put the tab there. With "up" it ran down away from the pointer.
+ *
  * Null over a gap or nothing: keep what there is.
  */
 export function dropTarget(
@@ -308,6 +317,7 @@ export function dropTarget(
   area: TileRect,
   gap: number,
   anchorId: string | null = null,
+  mergeIds: ReadonlySet<string> = new Set(),
 ): { targetId: string; side: TileDirection | null } | null {
   for (const [id, rect] of layout(remove(tree, dragId), area, gap)) {
     if (
@@ -345,6 +355,9 @@ export function dropTarget(
           return { targetId: id, side };
         }
       }
+      return { targetId: id, side: null };
+    }
+    if (mergeIds.has(id) && down < MERGE_BAND) {
       return { targetId: id, side: null };
     }
     if (across < DROP_EDGE) {

@@ -236,6 +236,25 @@ test("dropTarget: main at 2/3 splits once the pointer passes 1/3 of the screen",
   assert.deepEqual(target(1600), { targetId: "1", side: "right" });
 });
 
+test("dropTarget: the upper quarter of another Chrome window holds for a merge", () => {
+  // Three Chrome columns; 3 is dragged from 1 toward 2, another Chrome window.
+  const tree = moveBeside(open(WIDE, 2), "4", "2", "left", WIDE, GAP);
+  const target = (x: number, y: number) =>
+    dropTarget(tree, "3", x, y, WIDE, GAP, "1", new Set(["1", "2", "4"]));
+  // Just below the tab row (y 160 of 1440): nothing moves, 2 stays put.
+  assert.deepEqual(target(2200, 160), { targetId: "2", side: null });
+  // Its left strip in the band, where the first tabs are, holds too.
+  assert.deepEqual(target(1750, 60), { targetId: "2", side: null });
+  // Below the band the zones are as before.
+  assert.deepEqual(target(2200, 500), { targetId: "2", side: "up" });
+  assert.deepEqual(target(2200, 1100), { targetId: "2", side: "down" });
+  // Not a merge target (another app): "up" as before.
+  assert.deepEqual(dropTarget(tree, "3", 2200, 160, WIDE, GAP, "1"), {
+    targetId: "2",
+    side: "up",
+  });
+});
+
 test("moveBeside: between two columns gives three equal columns", () => {
   const three = moveBeside(open(WIDE, 2), "3", "2", "left", WIDE, GAP);
   assert.deepEqual(leafIds(three), ["1", "3", "2"]);

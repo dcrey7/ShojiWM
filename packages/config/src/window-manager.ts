@@ -268,9 +268,6 @@ function isClientDrag(window: WaylandWindow): boolean {
 /** Chrome and Chromium on X11 (`WM_CLASS`). */
 const CHROME_X11_APP_IDS = new Set(["Google-chrome", "google-chrome", "Chromium", "chromium"]);
 
-/** Height of Chrome's tab row, with some slack (logical px). */
-const CHROME_TAB_ROW_HEIGHT = 48;
-
 function isChromeWindow(window: WaylandWindow): boolean {
   return CHROME_X11_APP_IDS.has(window.appId.peek() ?? "");
 }
@@ -7460,10 +7457,6 @@ export class Workspace {
           ?.targetId ?? null;
     }
     const base = this.dragBaseTree;
-    if (this.overOtherChromeTabRow(window, pointerX, pointerY)) {
-      // Hold still: Chrome puts the tab in that window's tab row.
-      return;
-    }
     const target = tileDropTarget(
       base,
       window.id,
@@ -7472,6 +7465,7 @@ export class Workspace {
       area,
       TILE_GAP,
       this.dragAnchorId,
+      this.chromeMergeIds(window),
     );
     if (!target) {
       return;
@@ -7495,19 +7489,16 @@ export class Workspace {
     }
   }
 
-  /**
-   * A Chrome window dragged over the tab row of another Chrome window. The
-   * layout must not move that window away: Chrome merges the tab there.
-   */
-  private overOtherChromeTabRow(window: WaylandWindow, x: number, y: number): boolean {
+  /** The windows a dragged Chrome window can go into: the other Chrome windows. */
+  private chromeMergeIds(window: WaylandWindow): Set<string> {
     if (!isChromeWindow(window)) {
-      return false;
+      return new Set();
     }
-    const under = this.tileAt(x, y, window.id);
-    if (!under || !isChromeWindow(under)) {
-      return false;
-    }
-    return y < read(under.state[WINDOW_STATE_RECT]().y) + CHROME_TAB_ROW_HEIGHT;
+    return new Set(
+      this.windows
+        .filter((other) => other.id !== window.id && isChromeWindow(other))
+        .map((other) => other.id),
+    );
   }
 
   private resetTreeDrag() {
