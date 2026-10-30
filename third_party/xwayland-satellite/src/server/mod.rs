@@ -113,6 +113,8 @@ struct WindowAttributes {
     size_hints: Option<WmNormalHints>,
     title: Option<WmName>,
     class: Option<String>,
+    /// `WM_WINDOW_ROLE`, like Chrome's "browser" or "pop-up".
+    role_name: Option<String>,
     group: Option<x::Window>,
     decorations: Option<Decorations>,
     transient_for: Option<x::Window>,
@@ -1070,6 +1072,14 @@ impl<S: X11Selection + 'static> InnerServerState<S> {
         }
     }
 
+    pub fn set_win_role_name(&mut self, window: x::Window, role_name: Option<String>) {
+        let Some(id) = self.windows.get(&window).copied() else {
+            debug!("not setting role for unknown window {window:?}");
+            return;
+        };
+        self.world.get::<&mut WindowData>(id).unwrap().attrs.role_name = role_name;
+    }
+
     pub fn set_win_class(&mut self, window: x::Window, class: String) {
         let Some(data) = self
             .windows
@@ -1699,6 +1709,8 @@ impl<S: X11Selection + 'static> InnerServerState<S> {
             .world
             .get::<&client::wl_surface::WlSurface>(entity)
             .unwrap();
+        // Before the toplevel request goes out (see `window_roles`).
+        crate::window_roles::set(surface.id().protocol_id(), window.attrs.role_name.clone());
         let needs_satellite_decorations =
             wl_decoration.is_none() && window.attrs.decorations.is_none_or(|d| d.is_serverside());
         let (sat_decoration, buf) = needs_satellite_decorations

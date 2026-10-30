@@ -132,6 +132,12 @@ impl XdgShellHandler for ShojiWM {
         if uses_xwayland_refresh_override && self.left_button_held {
             self.client_drag_surfaces.insert(surface_id.clone());
         }
+        // Empty when the X11 window has no role, like Chrome's profile picker.
+        if uses_xwayland_refresh_override {
+            let role = crate::xwayland_satellite::take_x11_window_role(surface_id.protocol_id());
+            self.x11_window_roles
+                .insert(surface_id.clone(), role.unwrap_or_default());
+        }
         let window = Window::new_wayland_window(surface);
         let snapshot = self.snapshot_window(&window);
         let initial_location = match self.suggested_window_location(&snapshot) {
@@ -208,6 +214,7 @@ impl XdgShellHandler for ShojiWM {
         }) {
             crate::xwayland_satellite::forget_x11_window_position(wl_surface.id().protocol_id());
             self.client_drag_surfaces.remove(&wl_surface.id());
+            self.x11_window_roles.remove(&wl_surface.id());
             self.forget_client_move(wl_surface);
         }
         let Some(window) = self

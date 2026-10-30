@@ -24,6 +24,8 @@ export interface WaylandWindowSnapshot {
   readonly minimizedGeometry?: WindowPosition;
   /** `true` for an X11 window that opened while the left button was held: a tab window Chrome is dragging out. / 左ボタンを押したまま開いた X11 ウィンドウ（Chrome がドラッグで切り出したタブ）のとき `true`。 */
   readonly clientDrag?: boolean;
+  /** An X11 window's `WM_WINDOW_ROLE`: Chrome says "browser" for a normal window and "pop-up" for a popup, like an OAuth sign-in; empty when an X11 window has none, `undefined` for a Wayland window. / X11 ウィンドウの `WM_WINDOW_ROLE`（Chrome は通常ウィンドウに "browser"、ポップアップに "pop-up" を設定）。 */
+  readonly x11Role?: string;
 }
 
 /** The `role` of KDE's `org_kde_plasma_surface.set_role`. / KDE の `org_kde_plasma_surface.set_role` の役割。 */
@@ -245,6 +247,8 @@ export interface WaylandWindow {
   readonly isTransient: import("./signals").ReadonlySignal<boolean>;
   /** `true` for an X11 window that opened while the left button was held: a tab window Chrome is dragging out. / 左ボタンを押したまま開いた X11 ウィンドウ（Chrome がドラッグで切り出したタブ）のとき `true`。 */
   readonly clientDrag: import("./signals").ReadonlySignal<boolean>;
+  /** An X11 window's `WM_WINDOW_ROLE`: Chrome says "browser" for a normal window and "pop-up" for a popup, like an OAuth sign-in; empty when an X11 window has none, `undefined` for a Wayland window. / X11 ウィンドウの `WM_WINDOW_ROLE`（Chrome は通常ウィンドウに "browser"、ポップアップに "pop-up" を設定）。 */
+  readonly x11Role: import("./signals").ReadonlySignal<string | undefined>;
   /** `id` of the parent window if this is a transient, otherwise `undefined`. / トランジェントの場合は親ウィンドウの `id`、そうでない場合は `undefined`。 */
   readonly parentId: import("./signals").ReadonlySignal<string | undefined>;
   /**
@@ -3337,6 +3341,7 @@ export interface ReactiveWaylandWindowSignals {
   isResizable: import("./signals").ReadonlySignal<boolean>;
   isTransient: import("./signals").ReadonlySignal<boolean>;
   clientDrag: import("./signals").ReadonlySignal<boolean>;
+  x11Role: import("./signals").ReadonlySignal<string | undefined>;
   parentId: import("./signals").ReadonlySignal<string | undefined>;
   plasma: import("./signals").ReadonlySignal<PlasmaSurfaceState | undefined>;
   minimizedGeometry: import("./signals").ReadonlySignal<WindowPosition | undefined>;

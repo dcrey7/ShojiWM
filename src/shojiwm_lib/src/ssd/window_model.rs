@@ -56,6 +56,11 @@ pub struct WaylandWindowSnapshot {
     /// window Chrome is dragging out (see `ShojiWM::client_drag_surfaces`).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub client_drag: bool,
+    /// An X11 window's `WM_WINDOW_ROLE`: Chrome says "browser" for a normal
+    /// window and "pop-up" for a popup, like an OAuth sign-in. Empty for an
+    /// X11 window with no role; `None` for a Wayland window.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub x11_role: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
@@ -932,6 +937,10 @@ impl ShojiWM {
             client_drag: self
                 .client_drag_surfaces
                 .contains(&toplevel.wl_surface().id()),
+            x11_role: self
+                .x11_window_roles
+                .get(&toplevel.wl_surface().id())
+                .cloned(),
         }
     }
 
@@ -959,6 +968,7 @@ impl ShojiWM {
                 plasma: None,
                 minimized_geometry: None,
                 client_drag: false,
+                x11_role: None,
             };
         };
 
@@ -1037,6 +1047,7 @@ impl ShojiWM {
             plasma: None,
             minimized_geometry: self.plasma_minimized_geometry(window),
             client_drag: false,
+            x11_role: None,
         }
     }
 

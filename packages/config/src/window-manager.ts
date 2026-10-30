@@ -260,12 +260,30 @@ function isClientDrag(window: WaylandWindow): boolean {
   return window.clientDrag?.peek() ?? false;
 }
 
+/** Chrome and Chromium on X11 (`WM_CLASS`). */
+const CHROME_X11_APP_IDS = new Set(["Google-chrome", "google-chrome", "Chromium", "chromium"]);
+
+/**
+ * A Chrome window that is not a browser window: its profile picker (role "")
+ * or a popup, like an OAuth sign-in ("pop-up"). DevTools is a popup too, but
+ * it is a work window, so it tiles. An older ShojiWM sends no role at all
+ * (`undefined`); then nothing changes.
+ */
+export function isChromeDialog(window: WaylandWindow): boolean {
+  const role = window.x11Role?.peek();
+  if (role === undefined || !CHROME_X11_APP_IDS.has(window.appId.peek() ?? "")) {
+    return false;
+  }
+  return role !== "browser" && !window.title.peek().startsWith("DevTools");
+}
+
 /** The window can be a tile: resizable, not a child window, not a dialog. */
 export function isTileable(window: WaylandWindow): boolean {
   return (
     window.isResizable.peek() &&
     !window.isTransient.peek() &&
-    !ALWAYS_FLOAT_APP_IDS.has(window.appId.peek() ?? "")
+    !ALWAYS_FLOAT_APP_IDS.has(window.appId.peek() ?? "") &&
+    !isChromeDialog(window)
   );
 }
 const INITIAL_TILEABILITY_SETTLE_DURATION = seconds(1);

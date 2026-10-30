@@ -1,5 +1,6 @@
 mod server;
 pub mod window_positions;
+pub mod window_roles;
 pub mod xstate;
 
 use crate::server::{NoConnection, PendingSurfaceState, ServerState};

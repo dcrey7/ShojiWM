@@ -516,6 +516,12 @@ pub struct ShojiWM {
     /// Lamp (`clientDrag` on the window snapshot).
     pub client_drag_surfaces:
         std::collections::HashSet<smithay::reexports::wayland_server::backend::ObjectId>,
+    /// X11 toplevels' `WM_WINDOW_ROLE` (`x11Role` on the window snapshot).
+    /// Chrome's popups say "pop-up"; the config floats them.
+    pub x11_window_roles: std::collections::HashMap<
+        smithay::reexports::wayland_server::backend::ObjectId,
+        String,
+    >,
     /// Event time (ms) the tap modifier was pressed, for `within`.
     pub tap_armed_at: u32,
     pub pending_tap_binding_ids: Vec<String>,
@@ -1887,6 +1893,7 @@ impl ShojiWM {
             client_move: None,
             client_move_retry: None,
             client_drag_surfaces: std::collections::HashSet::new(),
+            x11_window_roles: std::collections::HashMap::new(),
             tap_armed_at: 0,
             pending_tap_binding_ids: Vec::new(),
             suggested_window_offset: None,
@@ -3122,6 +3129,7 @@ impl ShojiWM {
             plasma: None,
             minimized_geometry: None,
             client_drag: false,
+            x11_role: None,
             id: "__warmup__".into(),
             title: "warmup".into(),
             app_id: Some("shoji_wm.warmup".into()),

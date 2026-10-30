@@ -368,6 +368,11 @@ pub fn publish_x11_window_position(surface_id: u32, x: i32, y: i32) {
     }
 }
 
+/// A new X11 toplevel's `WM_WINDOW_ROLE`, once (see `satellite::window_roles`).
+pub fn take_x11_window_role(surface_id: u32) -> Option<String> {
+    satellite::window_roles::take(surface_id)
+}
+
 /// Forget a gone toplevel's position.
 pub fn forget_x11_window_position(surface_id: u32) {
     satellite::window_positions::remove(surface_id);

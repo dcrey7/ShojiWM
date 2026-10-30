@@ -974,6 +974,9 @@ impl XState {
             server_state.set_win_class(window, class);
         }
 
+        let window_role = self.get_wm_window_role(window)?;
+        server_state.set_win_role_name(window, window_role);
+
         let size_hints = self.get_wm_size_hints(window)?;
         if let Some(hints) = size_hints {
             server_state.set_size_hints(window, hints);
@@ -1053,6 +1056,17 @@ impl XState {
             let class = fields.next().or(instance).unwrap_or(&[]);
             trace!("{window:?} class: {class:?}");
             String::from_utf8_lossy(class).to_string()
+        };
+        PropertyCookieWrapper::new(&self.connection, cookie).resolve(resolver)
+    }
+
+    fn get_wm_window_role(&self, window: x::Window) -> XResult<Option<String>> {
+        let cookie =
+            self.get_property_cookie(window, self.atoms.wm_window_role, x::ATOM_STRING, 256);
+        let resolver = |reply: x::GetPropertyReply| {
+            let data: &[u8] = reply.value();
+            let data = data.split(|byte| *byte == 0).next().unwrap();
+            String::from_utf8_lossy(data).to_string()
         };
         PropertyCookieWrapper::new(&self.connection, cookie).resolve(resolver)
     }
@@ -1238,6 +1252,7 @@ xcb::atoms_struct! {
         wm_take_focus => b"WM_TAKE_FOCUS" only_if_exists = false,
         wm_delete_window => b"WM_DELETE_WINDOW" only_if_exists = false,
         wm_transient_for => b"WM_TRANSIENT_FOR" only_if_exists = false,
+        wm_window_role => b"WM_WINDOW_ROLE" only_if_exists = false,
         wm_state => b"WM_STATE" only_if_exists = false,
         wm_s0 => b"WM_S0" only_if_exists = false,
         net_wm_cm_s0 => b"_NET_WM_CM_S0" only_if_exists = false,
