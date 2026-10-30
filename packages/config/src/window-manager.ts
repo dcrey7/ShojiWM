@@ -237,6 +237,11 @@ const tabDragGeometry = new Map<
 >();
 /** Tab windows that came out of their tab already (see `growTabWindow`). */
 const grownTabWindowIds = new Set<string>();
+/**
+ * Tab windows dropped once. A later drag moves them as plain windows: drawn
+ * scaled, Chrome counts the pointer wrong and cannot put the tab back.
+ */
+const droppedTabWindowIds = new Set<string>();
 
 /**
  * Windows that always float, also on a tiled workspace:
@@ -263,6 +268,13 @@ function isClientDrag(window: WaylandWindow): boolean {
 /** Chrome and Chromium on X11 (`WM_CLASS`). */
 const CHROME_X11_APP_IDS = new Set(["Google-chrome", "google-chrome", "Chromium", "chromium"]);
 
+/** Height of Chrome's tab row, with some slack (logical px). */
+const CHROME_TAB_ROW_HEIGHT = 48;
+
+function isChromeWindow(window: WaylandWindow): boolean {
+  return CHROME_X11_APP_IDS.has(window.appId.peek() ?? "");
+}
+
 /**
  * A Chrome window that is not a browser window: its profile picker (role "")
  * or a popup, like an OAuth sign-in ("pop-up"). DevTools is a popup too, but
@@ -271,7 +283,7 @@ const CHROME_X11_APP_IDS = new Set(["Google-chrome", "google-chrome", "Chromium"
  */
 export function isChromeDialog(window: WaylandWindow): boolean {
   const role = window.x11Role?.peek();
-  if (role === undefined || !CHROME_X11_APP_IDS.has(window.appId.peek() ?? "")) {
+  if (role === undefined || !isChromeWindow(window)) {
     return false;
   }
   return role !== "browser" && !window.title.peek().startsWith("DevTools");
@@ -1456,7 +1468,7 @@ export class HybridWindowManager {
    */
   public tabDragMoveEvent(event: WindowMoveEvent): WindowMoveEvent {
     const window = event.window;
-    if (!isClientDrag(window)) {
+    if (!isClientDrag(window) || droppedTabWindowIds.has(window.id)) {
       return event;
     }
     const workspace = this.findWorkspaceForWindow(window);
@@ -1551,6 +1563,7 @@ export class HybridWindowManager {
         // Dropped: an ordinary window from now on.
         this.liveTabWindows.delete(event.window);
         this.unscaleTabWindow(event.window);
+        droppedTabWindowIds.add(event.window.id);
       }
       lastTabDragPointer.set(event.window.id, event.currentPointer);
     }
@@ -7447,6 +7460,10 @@ export class Workspace {
           ?.targetId ?? null;
     }
     const base = this.dragBaseTree;
+    if (this.overOtherChromeTabRow(window, pointerX, pointerY)) {
+      // Hold still: Chrome puts the tab in that window's tab row.
+      return;
+    }
     const target = tileDropTarget(
       base,
       window.id,
@@ -7476,6 +7493,21 @@ export class Workspace {
       this.tree = next;
       this.dragDetached = false;
     }
+  }
+
+  /**
+   * A Chrome window dragged over the tab row of another Chrome window. The
+   * layout must not move that window away: Chrome merges the tab there.
+   */
+  private overOtherChromeTabRow(window: WaylandWindow, x: number, y: number): boolean {
+    if (!isChromeWindow(window)) {
+      return false;
+    }
+    const under = this.tileAt(x, y, window.id);
+    if (!under || !isChromeWindow(under)) {
+      return false;
+    }
+    return y < read(under.state[WINDOW_STATE_RECT]().y) + CHROME_TAB_ROW_HEIGHT;
   }
 
   private resetTreeDrag() {
@@ -8508,6 +8540,7 @@ function growTabWindow(event: WindowMoveEvent): void {
 function scheduleCloseAnimation(window: WaylandWindow): void {
   if (isClientDrag(window)) {
     grownTabWindowIds.delete(window.id);
+    droppedTabWindowIds.delete(window.id);
     const pointer = lastTabDragPointer.get(window.id);
     lastTabDragPointer.delete(window.id);
     // A dragged tab window dropped back into Chrome goes back into the tab:
