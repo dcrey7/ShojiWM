@@ -81,7 +81,7 @@ impl Cursor {
         Self::from_config(name, size)
     }
 
-    fn from_config(name: String, size: u32) -> Self {
+    pub(crate) fn from_config(name: String, size: u32) -> Self {
         let theme = CursorTheme::load(&name);
         let cache = default_icon_cache(&theme, &name);
         Self {
@@ -123,6 +123,16 @@ impl Cursor {
                 })
         });
         frame(time.as_millis() as u32, size, icons)
+    }
+
+    /// Like `get_image`, at an explicit nominal size in image pixels. The
+    /// remote cursor asks for `size * output scale * remote scale`.
+    pub fn get_image_sized(&mut self, icon: CursorIcon, size: u32, time: Duration) -> Image {
+        let saved = self.size;
+        self.size = size.max(1);
+        let image = self.get_image(icon, 1, time);
+        self.size = saved;
+        image
     }
 }
 

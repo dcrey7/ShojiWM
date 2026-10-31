@@ -6,6 +6,8 @@
 
 use std::time::{Duration, Instant};
 
+use xcursor::parser::Image;
+
 pub const IDLE: Duration = Duration::from_secs(3);
 pub const FADE: Duration = Duration::from_millis(150);
 /// A longer pause between two EIS motions starts a new stroke at gain 1.
@@ -85,6 +87,9 @@ fn parse_hex_rgb(text: &str) -> Option<[u8; 3]> {
 #[derive(Debug, Default)]
 pub struct RemotePointer {
     pub style: RemoteCursorStyle,
+    /// Last baked image: (base arrow, fade step, ring colour) -> composed.
+    /// The arrow is rarely animated, so this saves re-baking every frame.
+    composed: Option<(Image, u8, Option<[u8; 3]>, Image)>,
     last_remote: Option<Instant>,
     last_motion: Option<Instant>,
     fade_in_at: Option<Instant>,
@@ -152,6 +157,23 @@ impl RemotePointer {
         }
     }
 
+    /// The remote cursor image for `base` at ring opacity `alpha`. Alpha is
+    /// quantised to 8 steps so a fade bakes at most 8 images.
+    pub fn remote_frame(&mut self, base: Image, alpha: f32) -> Image {
+        let step = (alpha.clamp(0.0, 1.0) * 8.0).round() as u8;
+        let ring = self.style.ring;
+        if let Some((cached_base, cached_step, cached_ring, image)) = &self.composed
+            && *cached_step == step
+            && *cached_ring == ring
+            && *cached_base == base
+        {
+            return image.clone();
+        }
+        let image = compose_remote_cursor(&base, ring, step as f32 / 8.0);
+        self.composed = Some((base, step, ring, image.clone()));
+        image
+    }
+
     /// True while a fade runs, so the renderer keeps scheduling frames.
     pub fn animating(&self, now: Instant) -> bool {
         let alpha = self.ring_alpha(now);
@@ -159,10 +181,147 @@ impl RemotePointer {
     }
 }
 
+const RING_ALPHA: f32 = 0.85;
+const RING_STROKE: f32 = 2.0;
+const RING_GLOW: f32 = 6.0;
+
+/// Ring radius in image pixels for a cursor image of nominal `size`.
+pub fn ring_radius(size: u32) -> u32 {
+    ((size as f32) * 0.75).round() as u32
+}
+
+/// Centre of the visible (non-transparent) part of `image`, so the ring
+/// frames the whole arrow instead of only its tip.
+fn visible_centre(image: &Image) -> (f32, f32) {
+    let (mut x0, mut y0, mut x1, mut y1) = (u32::MAX, u32::MAX, 0, 0);
+    for y in 0..image.height {
+        for x in 0..image.width {
+            if image.pixels_rgba[((y * image.width + x) * 4 + 3) as usize] > 0 {
+                (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x), y1.max(y));
+            }
+        }
+    }
+    if x0 > x1 {
+        return (image.xhot as f32 + 0.5, image.yhot as f32 + 0.5);
+    }
+    ((x0 + x1 + 1) as f32 / 2.0, (y0 + y1 + 1) as f32 / 2.0)
+}
+
+/// A copy of `base` on a larger canvas with a soft ring around the arrow,
+/// drawn under it. It is one image on purpose: the hardware
+/// cursor plane holds one buffer, so the arrow and the ring move together.
+///
+/// Pixels are premultiplied, in the byte order the cursor buffer uses
+/// (`Fourcc::Argb8888` little-endian: B, G, R, A).
+pub fn compose_remote_cursor(base: &Image, ring: Option<[u8; 3]>, alpha: f32) -> Image {
+    let Some([r, g, b]) = ring else {
+        return base.clone();
+    };
+    let alpha = alpha.clamp(0.0, 1.0);
+    if alpha <= 0.0 {
+        return base.clone();
+    }
+    let radius = ring_radius(base.size) as f32;
+    let reach = radius + RING_STROKE + RING_GLOW;
+    let (ax, ay) = visible_centre(base);
+    // The canvas covers both the base image and the ring around the arrow.
+    let left = (reach - ax).ceil().max(0.0) as u32;
+    let top = (reach - ay).ceil().max(0.0) as u32;
+    let width = left + base.width.max((ax + reach).ceil() as u32);
+    let height = top + base.height.max((ay + reach).ceil() as u32);
+    let mut px = vec![0u8; (width * height * 4) as usize];
+    let (cx, cy) = (ax + left as f32, ay + top as f32);
+
+    for y in 0..height {
+        for x in 0..width {
+            let dx = x as f32 + 0.5 - cx;
+            let dy = y as f32 + 0.5 - cy;
+            let off = ((dx * dx + dy * dy).sqrt() - radius).abs();
+            // A solid stroke with a 1 px anti-aliased edge, plus a soft glow
+            // falling off to zero.
+            let half = RING_STROKE / 2.0;
+            let stroke = (half + 0.5 - off).clamp(0.0, 1.0);
+            let glow = (1.0 - (off - half) / RING_GLOW).clamp(0.0, 1.0).powi(2) * 0.6;
+            let cover = stroke.max(glow);
+            let a = cover * RING_ALPHA * alpha;
+            if a <= 0.0 {
+                continue;
+            }
+            let i = ((y * width + x) * 4) as usize;
+            px[i] = (b as f32 * a).round() as u8;
+            px[i + 1] = (g as f32 * a).round() as u8;
+            px[i + 2] = (r as f32 * a).round() as u8;
+            px[i + 3] = (255.0 * a).round() as u8;
+        }
+    }
+
+    // The arrow over the ring (premultiplied "over").
+    for y in 0..base.height {
+        for x in 0..base.width {
+            let s = ((y * base.width + x) * 4) as usize;
+            let src = &base.pixels_rgba[s..s + 4];
+            let src_alpha = src[3] as f32 / 255.0;
+            if src_alpha == 0.0 {
+                continue;
+            }
+            let d = (((y + top) * width + x + left) * 4) as usize;
+            for k in 0..4 {
+                let blended = src[k] as f32 + px[d + k] as f32 * (1.0 - src_alpha);
+                px[d + k] = blended.round().min(255.0) as u8;
+            }
+        }
+    }
+
+    Image {
+        size: base.size,
+        width,
+        height,
+        xhot: base.xhot + left,
+        yhot: base.yhot + top,
+        delay: base.delay,
+        pixels_rgba: px,
+        pixels_argb: Vec::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn composed_cursor_keeps_the_arrow_and_adds_a_ring_around_the_hotspot() {
+        let w = 8u32;
+        let mut px = vec![0u8; (w * w * 4) as usize];
+        px[0..4].copy_from_slice(&[255, 255, 255, 255]); // opaque hotspot pixel at (0,0)
+        let base = Image {
+            size: 8,
+            width: w,
+            height: w,
+            xhot: 0,
+            yhot: 0,
+            delay: 0,
+            pixels_rgba: px,
+            pixels_argb: vec![],
+        };
+        let out = compose_remote_cursor(&base, Some([0x3d, 0xae, 0xe9]), 1.0);
+        assert!(out.width > base.width && out.height > base.height);
+        let at = |x: u32, y: u32| {
+            let i = ((y * out.width + x) * 4) as usize;
+            out.pixels_rgba[i..i + 4].to_vec()
+        };
+        // The hotspot moves with the padding; the arrow pixel stays opaque white.
+        assert_eq!(at(out.xhot, out.yhot), vec![255, 255, 255, 255]);
+        // A pixel on the ring radius is ring-coloured (B, G, R order, premultiplied).
+        let ring = at(out.xhot + ring_radius(base.size), out.yhot);
+        assert!(ring[3] > 150, "ring alpha {}", ring[3]);
+        assert!(ring[0] > ring[2], "blue channel should beat red for #3daee9");
+        // Far from the ring (in a corner), the canvas is transparent.
+        assert_eq!(at(0, 0)[3], 0);
+        // No ring, or alpha 0: the base image comes back unchanged.
+        assert_eq!(compose_remote_cursor(&base, None, 1.0), base);
+        assert_eq!(compose_remote_cursor(&base, Some([1, 2, 3]), 0.0), base);
+    }
 
     #[test]
     fn style_from_config_fills_defaults_and_parses_colours() {
@@ -250,5 +409,30 @@ mod tests {
         rp.note_local_activity(off);
         assert!((rp.ring_alpha(off + Duration::from_millis(75)) - 0.5).abs() < 0.01);
         assert_eq!(rp.ring_alpha(off + Duration::from_millis(200)), 0.0);
+    }
+}
+
+/// Writes the baked remote cursor (real theme) as raw BGRA for a visual check:
+/// `SHOJI_REMOTE_CURSOR_DUMP=/tmp/x.bgra cargo test -p shojiwm_lib dump_remote_cursor -- --ignored`
+#[cfg(test)]
+mod visual {
+    #[test]
+    #[ignore = "writes an image for a human to look at"]
+    fn dump_remote_cursor() {
+        let Ok(path) = std::env::var("SHOJI_REMOTE_CURSOR_DUMP") else {
+            return;
+        };
+        let mut cursor = crate::cursor::Cursor::from_config("breeze_cursors".into(), 24);
+        let base = cursor.get_image_sized(
+            smithay::input::pointer::CursorIcon::Default,
+            36,
+            std::time::Duration::ZERO,
+        );
+        let style = super::RemoteCursorStyle::default();
+        let image = super::compose_remote_cursor(&base, style.ring, 1.0);
+        let header = format!("{} {} {} {}\n", image.width, image.height, image.xhot, image.yhot);
+        let mut out = header.into_bytes();
+        out.extend_from_slice(&image.pixels_rgba);
+        std::fs::write(path, out).unwrap();
     }
 }

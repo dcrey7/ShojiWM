@@ -4513,6 +4513,7 @@ fn render_surface(
             pointer_images,
             current_pointer_image,
             pointer_element,
+            remote_pointer,
             seat,
             window_decorations,
             windows_ready_for_decoration,
@@ -4644,7 +4645,19 @@ fn render_surface(
                     };
                     let cursor_scale =
                         output.current_scale().fractional_scale().ceil().max(1.0) as u32;
-                    let frame = cursor_theme.get_image(icon, cursor_scale, start_time.elapsed());
+                    // While a phone drives (and while its ring fades out),
+                    // draw the bigger arrow with the ring baked in.
+                    let ring_alpha = remote_pointer.ring_alpha(std::time::Instant::now());
+                    let frame = if ring_alpha > 0.0 {
+                        let size = (cursor_theme.size() as f64
+                            * cursor_scale as f64
+                            * remote_pointer.style.scale)
+                            .round() as u32;
+                        let base = cursor_theme.get_image_sized(icon, size, start_time.elapsed());
+                        remote_pointer.remote_frame(base, ring_alpha)
+                    } else {
+                        cursor_theme.get_image(icon, cursor_scale, start_time.elapsed())
+                    };
                     let buffer = pointer_images
                         .iter()
                         .find_map(|(image, buffer)| (image == &frame).then_some(buffer.clone()))

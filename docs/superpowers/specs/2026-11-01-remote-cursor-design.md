@@ -40,8 +40,9 @@ mouse and touchpad stay exactly as they are.
 
 - The arrow is drawn at `scale` × the theme size (default 1.5), from the same
   xcursor theme, so it stays sharp.
-- A ring is drawn centred on the hotspot:
-  - radius 1.1 × the scaled cursor size
+- A ring is drawn around the arrow, centred on its visible part (the
+  arrow's tip sits off-centre in its own image):
+  - radius 0.75 × the scaled cursor size
   - 2 px stroke and a soft 6 px outer glow
   - colour `ring` (default `#3daee9`), alpha 0.85
 - The ring fades in and out over 150 ms when the mode changes.
@@ -93,6 +94,7 @@ draws its cursor. So:
 
 ## Changelog
 
+- 2026-11-01 01:05 CET: ring centred on the arrow, radius 0.75, after a visual check showed a tip-centred ring looked off-balance.
 - 2026-11-01 00:40 CET: testing section matched to the plan (winit draws no cursor).
 - 2026-11-01 00:19 CET: created from the brainstorming session. Approved: glow
   ring, acceleration.

@@ -219,8 +219,7 @@ impl ShojiWM {
             if remote {
                 self.arm_remote_cursor_timer();
             }
-            // The cursor image changes; the fast path alone would keep the old one.
-            self.pointer_images_dirty_for_remote();
+            self.arm_remote_cursor_fade();
         }
         remote
     }
@@ -234,8 +233,8 @@ impl ShojiWM {
                 match state.remote_pointer.idle_deadline() {
                     Some(deadline) if deadline > now => TimeoutAction::ToDuration(deadline - now),
                     _ => {
-                        // Expired, or a local event ended it: redraw for the fade out.
-                        state.pointer_images_dirty_for_remote();
+                        // Expired, or a local event ended it: run the fade out.
+                        state.arm_remote_cursor_fade();
                         TimeoutAction::Drop
                     }
                 }
@@ -246,10 +245,26 @@ impl ShojiWM {
         }
     }
 
-    /// Force the next frame to rebuild the cursor image and render fully.
-    fn pointer_images_dirty_for_remote(&mut self) {
-        self.current_pointer_image = None;
+    /// Redraw every 16 ms while the remote ring fades, plus once at the end.
+    /// A full render is needed: the cursor fast path only moves the plane
+    /// and would keep the old image.
+    fn arm_remote_cursor_fade(&mut self) {
+        use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
+        const TICK: std::time::Duration = std::time::Duration::from_millis(16);
         self.schedule_redraw();
+        let inserted = self
+            .loop_handle
+            .insert_source(Timer::from_duration(TICK), |_, _, state| {
+                state.schedule_redraw();
+                if state.remote_pointer.animating(std::time::Instant::now()) {
+                    TimeoutAction::ToDuration(TICK)
+                } else {
+                    TimeoutAction::Drop
+                }
+            });
+        if let Err(error) = inserted {
+            tracing::warn!(%error, "failed to arm the remote cursor fade");
+        }
     }
 
     fn pointer_motion_delta<D: smithay::backend::input::Device>(
