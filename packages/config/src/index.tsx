@@ -26,7 +26,6 @@ import {
   type DisplayConfigDraft,
   compilePopupEffect,
   popupSource,
-  Popup,
   type ReadonlySignal,
   DefaultComposition,
   animationVariable,
@@ -1853,7 +1852,6 @@ const TrafficLight = ({
   glyph,
   enabled,
   onClick,
-  tooltip,
 }: {
   window: WaylandWindow;
   kind: keyof typeof TRAFFIC_LIGHT_GROW;
@@ -1861,7 +1859,6 @@ const TrafficLight = ({
   glyph: string | ReadonlySignal<string>;
   enabled: () => boolean;
   onClick: () => void;
-  tooltip?: CompositionRenderable | null;
 }) => {
   const [hover, setHover] = useState(false);
   const [pressed, setPressed] = useState(false);
@@ -1935,7 +1932,6 @@ const TrafficLight = ({
           }}
         />
       ) : null}
-      {tooltip ?? null}
     </Box>
   );
 };
@@ -1951,48 +1947,6 @@ const CloseButton = ({ window }: { window: WaylandWindow }) => (
   />
 );
 
-
-/** How long the pointer has to rest on a title bar button before its tooltip shows. */
-const TOOLTIP_DELAY_MS = 500;
-
-/**
- * A small label under a title bar button, drawn above every window. It
- * opens once the pointer has rested on the button for `TOOLTIP_DELAY_MS` and
- * closes as soon as it leaves.
- */
-const TitlebarTooltip = ({
-  text,
-}: {
-  text: string | ReadonlySignal<string>;
-}) => (
-  <Popup
-    trigger="hover"
-    openDelay={TOOLTIP_DELAY_MS}
-    closeDelay={0}
-    placement="bottom"
-    offset={8}
-  >
-    <Box
-      style={{
-        background: "#1f2430e6",
-        borderRadius: 6,
-        paddingX: 8,
-        paddingY: 4,
-        border: { px: 1, color: "#ffffff1f" },
-        boxShadow: [{ y: 4, blur: 12, color: "#00000070" }],
-      }}
-    >
-      <Label
-        text={text}
-        style={{
-          color: "#e6e9ef",
-          fontFamily: ["Noto Sans CJK JP", "Noto Color Emoji"],
-          fontSize: 12,
-        }}
-      />
-    </Box>
-  </Popup>
-);
 
 const MaximizeButton = ({ window }: { window: WaylandWindow }) => {
   // A window that cannot resize gets a grey light, like on macOS.
@@ -2024,15 +1978,6 @@ const MaximizeButton = ({ window }: { window: WaylandWindow }) => {
           window.maximize();
         }
       }}
-      tooltip={
-        window.isResizable() ? (
-          <TitlebarTooltip
-            text={window.isMaximized((maximized) =>
-              maximized ? "Restore" : "Maximize",
-            )}
-          />
-        ) : null
-      }
     />
   );
 };
@@ -2045,7 +1990,6 @@ const MinimizeButton = ({ window }: { window: WaylandWindow }) => (
     glyph="./assets/mac-glass-minus.svg"
     enabled={() => true}
     onClick={() => window.minimize()}
-    tooltip={<TitlebarTooltip text="Minimize" />}
   />
 );
 
