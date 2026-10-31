@@ -303,6 +303,8 @@ const UNMAXIMIZE_GRAB_ANIMATION_DURATION = 90;
 const RESTORE_ACTIVATE_GRACE_MS = 100;
 export const WINDOW_MANAGEMENT_EASING = cubicBezier(0.1, 0.9, 0.2, 1.0);
 const WINDOW_OPEN_EASING = cubicBezier(0.1, 1.1, 0.1, 1.1);
+/** How far (logical px) a tile's title bar must move before the drag starts. */
+const TILE_DRAG_THRESHOLD = 8;
 /** Offset between floating windows that would otherwise open on the same spot. */
 const FLOATING_CASCADE_STEP = 32;
 /** Tiles moving and resizing: short, so the in-between frames pass quickly. */
@@ -1784,6 +1786,18 @@ export class HybridWindowManager {
 
   private onTileWindowMove(event: WindowMoveEvent, workspace: Workspace) {
     const window = event.window;
+    if (
+      this.tileDrag?.window.id !== window.id &&
+      workspace.hasTile(window) &&
+      Math.hypot(
+        event.currentPointer.x - event.startPointer.x,
+        event.currentPointer.y - event.startPointer.y,
+      ) < TILE_DRAG_THRESHOLD
+    ) {
+      // A click on the title bar, or a drag that has not moved yet: the
+      // layout stays exactly as it is. The click still focuses the window.
+      return;
+    }
     if (
       event.phase === "start" ||
       !this.tileDrag ||
@@ -4769,6 +4783,13 @@ export class Workspace {
   /** The dragged tile has no cell now (over the anchor's upper half). */
   private dragDetached = false;
   /**
+   * The tree and the dragged tile's cell when the drag started. Over its own
+   * cell the tile stays where it was, sizes and all; a drop with no new place
+   * goes back to this tree.
+   */
+  private dragStartTree: TileTree | undefined = undefined;
+  private dragStartCell: TileRect | null = null;
+  /**
    * Chrome tab windows (`clientDrag`) with their first time seen. They take
    * no cell before their drag places them, so opening one moves nothing; a
    * drag that never comes gives up after CLIENT_DRAG_PLACE_WAIT_MS.
@@ -6584,8 +6605,15 @@ export class Workspace {
       return;
     }
     this.resetTreeDrag();
-    // A dragged tile leaves its column and moves as a column of its own.
-    this.popOutOfColumn(window);
+    if (this.mode === "tiled") {
+      this.dragStartTree = this.tree;
+      this.dragStartCell =
+        tileLayout(this.tree, this.tiledArea(), TILE_GAP).get(window.id) ?? null;
+    } else {
+      // A dragged tile leaves its column and moves as a column of its own.
+      // (Tiled mode keeps its stacks in the tree; the drag moves it there.)
+      this.popOutOfColumn(window);
+    }
     this.activeWindowId = window.id;
     this.draggingWindowId = window.id;
     const wasMaximized = window.state[WINDOW_STATE_MAXIMIZED]();
@@ -7450,11 +7478,28 @@ export class Workspace {
     pointerY: number,
   ) {
     const area = this.tiledArea();
+    const cell = this.dragStartCell;
+    if (
+      this.dragStartTree !== undefined &&
+      cell &&
+      pointerX >= cell.x &&
+      pointerX < cell.x + cell.width &&
+      pointerY >= cell.y &&
+      pointerY < cell.y + cell.height
+    ) {
+      // Over its own cell: it stays where it was, and nobody resizes.
+      this.tree = this.dragStartTree;
+      this.dragDetached = false;
+      return;
+    }
     if (this.dragBaseTree === undefined) {
-      this.dragBaseTree = removeTile(this.tree, window.id);
-      this.dragAnchorId =
-        tileDropTarget(this.dragBaseTree, window.id, pointerX, pointerY, area, TILE_GAP)
-          ?.targetId ?? null;
+      this.dragBaseTree = removeTile(this.dragStartTree ?? this.tree, window.id);
+      // Only a tab pulled out of Chrome starts over another window (its
+      // source). A tile starts over its own cell, so it has no anchor.
+      this.dragAnchorId = cell
+        ? null
+        : (tileDropTarget(this.dragBaseTree, window.id, pointerX, pointerY, area, TILE_GAP)
+            ?.targetId ?? null);
     }
     const base = this.dragBaseTree;
     const target = tileDropTarget(
@@ -7505,15 +7550,30 @@ export class Workspace {
     this.dragBaseTree = undefined;
     this.dragAnchorId = null;
     this.dragDetached = false;
+    this.dragStartTree = undefined;
+    this.dragStartCell = null;
+  }
+
+  /** The window has a cell in the tiled layout. */
+  public hasTile(window: WaylandWindow): boolean {
+    return this.mode === "tiled" && hasLeaf(this.tree, window.id);
   }
 
   /**
-   * The drag ends. Dropped with no cell (over the anchor's upper half, off
-   * Chrome's tab strip): a new column right of the anchor.
+   * The drag ends. Dropped with no cell: a tile goes back where it started;
+   * a tab pulled out of Chrome (over its source's upper half, off the tab
+   * strip) takes a new column right of that source, the anchor.
    */
   private finishTreeDrag(window: WaylandWindow) {
     this.unplacedClientDrag.delete(window.id);
-    if (this.mode === "tiled" && this.dragDetached && this.dragAnchorId) {
+    if (
+      this.mode === "tiled" &&
+      this.dragDetached &&
+      this.dragStartTree !== undefined &&
+      hasLeaf(this.dragStartTree, window.id)
+    ) {
+      this.tree = this.dragStartTree;
+    } else if (this.mode === "tiled" && this.dragDetached && this.dragAnchorId) {
       const placed = moveTileBeside(
         this.tree,
         window.id,

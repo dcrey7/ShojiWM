@@ -493,3 +493,15 @@ test("swap: two windows of one split keep their sizes", () => {
   // Swapping back gives the start.
   assert.deepEqual(rects(swap(swap(pair, "term", "chrome"), "chrome", "term")), before);
 });
+
+test("a title-bar click: at its own spot, the tree without the tile puts the pointer over a neighbour", () => {
+  // Why a tile drag holds still over its own cell (`moveTreeTileToPointer`):
+  // `dropTarget` sees the layout without the dragged tile, so at the spot it
+  // was pressed a neighbour has grown under the pointer. Acting on that
+  // swapped tiles on a plain click, and `moveBeside` reset the widths.
+  const tree = moveBeside(open(WIDE, 2), "3", "2", "right", WIDE, GAP);
+  assert.equal(leafIds(tree).length, 3);
+  const cell = layout(tree, WIDE, GAP).get("1") as TileRect;
+  const target = dropTarget(tree, "1", cell.x + cell.width / 2, cell.y + 10, WIDE, GAP);
+  assert.notEqual(target?.targetId, "1");
+});
