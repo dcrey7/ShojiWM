@@ -497,15 +497,7 @@ fn apply_keyboard_xkb_config(
         return;
     };
 
-    let xkb_config = keyboard
-        .as_ref()
-        .map_or_else(XkbConfig::default, |keyboard| XkbConfig {
-            rules: keyboard.rules.as_deref().unwrap_or(""),
-            model: keyboard.model.as_deref().unwrap_or(""),
-            layout: keyboard.layout.as_deref().unwrap_or(""),
-            variant: keyboard.variant.as_deref().unwrap_or(""),
-            options: keyboard.options.clone(),
-        });
+    let xkb_config = xkb_config_for(keyboard.as_ref());
     match handle.set_xkb_config(state, xkb_config) {
         Ok(()) => {
             state.runtime_applied_xkb_config = keyboard;
@@ -515,6 +507,19 @@ fn apply_keyboard_xkb_config(
             warn!(?error, "{log_label}: failed to apply");
         }
     }
+}
+
+/// The xkb settings for `keyboard`, or the xkb defaults when there is none.
+/// Shared by the seat keyboard and the EIS virtual keyboards so both compile
+/// the same keymap.
+pub fn xkb_config_for(keyboard: Option<&RuntimeKeyboardInputConfig>) -> XkbConfig<'_> {
+    keyboard.map_or_else(XkbConfig::default, |keyboard| XkbConfig {
+        rules: keyboard.rules.as_deref().unwrap_or(""),
+        model: keyboard.model.as_deref().unwrap_or(""),
+        layout: keyboard.layout.as_deref().unwrap_or(""),
+        variant: keyboard.variant.as_deref().unwrap_or(""),
+        options: keyboard.options.clone(),
+    })
 }
 
 fn keyboard_config_for_snapshot(

@@ -34,3 +34,7 @@ pipewire = { version = "0.9", features = ["v0_3_77"] }
 libspa = { version = "0.9", features = ["v0_3_65"] }
 gbm = "0.18"
 drm-fourcc = "2.2"
+# RemoteDesktop: libei client for the Notify* replay path, and keymap lookup
+# for NotifyKeyboardKeysym. Same versions smithay already pulls in.
+reis = { version = "0.7.0", features = ["tokio"] }
+xkbcommon = "0.9.0"

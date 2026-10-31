@@ -6,7 +6,8 @@ ScreenCast skeleton that responds to D-Bus calls; no PipeWire stream yet.
 ## What it does today
 
 - Registers `org.freedesktop.impl.portal.desktop.shojiwm` on the session bus
-- Serves `org.freedesktop.impl.portal.ScreenCast` at
+- Serves `org.freedesktop.impl.portal.ScreenCast` and
+  `org.freedesktop.impl.portal.RemoteDesktop` at
   `/org/freedesktop/portal/desktop`
 - `CreateSession` / `SelectSources` log the call and succeed
 - `Start` returns an empty `streams` array — OBS will see the dialog complete
@@ -68,7 +69,37 @@ lowercase — xdg-desktop-portal 1.20+ case-folds when matching):
 [preferred]
 default=shojiwm
 org.freedesktop.impl.portal.ScreenCast=shojiwm
+org.freedesktop.impl.portal.RemoteDesktop=shojiwm
 ```
+
+## RemoteDesktop (remote input)
+
+The backend also serves `org.freedesktop.impl.portal.RemoteDesktop` (version 2,
+keyboard + pointer). This is what KDE Connect's Remote Input, and other
+remote-control apps, use on Wayland.
+
+How input flows:
+
+```
+app ── CreateSession / SelectDevices / Start ──> xdg-desktop-portal ──> shojiwm backend
+                                                                          │ asks "Allow remote control?"
+app <── ConnectToEIS: connected socket ─────────────────────────────────┘
+ │
+ └── libei ──> $XDG_RUNTIME_DIR/shojiwm.<WAYLAND_DISPLAY>.eis.sock ──> compositor
+                (smithay EiInput, same path as a real mouse and keyboard)
+```
+
+- The compositor binds the EIS socket at startup (`shojiwm_lib::eis`, mode
+  0600, exported as `SHOJIWM_EIS_SOCKET`).
+- `Start` shows a consent dialog unless the app passes a restore token from an
+  earlier "Allow" (`persist_mode` 1 or 2).
+- `ConnectToEIS` hands the app a fresh connection to that socket. The app then
+  talks libei to the compositor directly.
+- Legacy `Notify*` calls are replayed by the backend on its own EIS
+  connection. `NotifyKeyboardKeysym` is mapped through the compositor's keymap,
+  including Shift and AltGr levels.
+- Not offered: touch, and `NotifyPointerMotionAbsolute` (it needs a ScreenCast
+  stream). Absolute motion over libei works; regions are the outputs.
 
 ## Verifying
 

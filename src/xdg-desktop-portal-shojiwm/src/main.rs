@@ -1,6 +1,7 @@
 mod i18n;
 mod picker;
 mod pipewire_stream;
+mod remote_desktop;
 mod screencast;
 mod sources;
 mod toplevel_stream;
@@ -76,11 +77,15 @@ fn main() -> Result<(), Box<dyn Error>> {
                 "/org/freedesktop/portal/desktop",
                 screencast::ScreenCast::new(picker_handle.clone(), thumbnail_tx),
             )?
+            .serve_at(
+                "/org/freedesktop/portal/desktop",
+                remote_desktop::RemoteDesktop::new(picker_handle.clone()),
+            )?
             .build()
             .await
     })?;
 
-    tracing::info!(bus = BUS_NAME, "claimed D-Bus name; serving ScreenCast");
+    tracing::info!(bus = BUS_NAME, "claimed D-Bus name; serving ScreenCast and RemoteDesktop");
 
     // Spawn a ctrl-c watcher on the runtime that will tear us down.
     let rt_for_signal = runtime.clone();

@@ -15,3 +15,11 @@ cancel = "Cancel"
 [source]
 window = "Window"
 window_with_id = "Window — {id}"
+
+[remote_control]
+window_title = "ShojiWM — Remote control"
+heading = "Allow remote control?"
+body = "{app} wants to control your pointer and keyboard."
+unknown_app = "An application"
+allow = "Allow"
+deny = "Deny"

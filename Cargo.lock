@@ -4764,8 +4764,10 @@ checksum = "81f3fedd2777cde52c1be5e572efbec485eac7b801c47820eda388d4f13b9c4b"
 dependencies = [
  "calloop 0.14.4",
  "enumflags2",
+ "futures-util",
  "log",
  "rustix 1.1.4",
+ "tokio",
 ]
 
 [[package]]
@@ -8321,6 +8323,7 @@ dependencies = [
  "iced",
  "libspa",
  "pipewire",
+ "reis",
  "rustix 1.1.4",
  "serde",
  "tokio",
@@ -8331,6 +8334,7 @@ dependencies = [
  "wayland-client",
  "wayland-protocols",
  "wayland-protocols-wlr",
+ "xkbcommon",
  "zbus",
 ]
 

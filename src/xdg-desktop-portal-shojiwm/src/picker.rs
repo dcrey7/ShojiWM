@@ -1,8 +1,8 @@
-//! iced-based source picker.
+//! iced-based source picker and remote control consent dialog.
 //!
 //! `iced::daemon` lets us run an app with no initial window. We open a window
-//! when a `PickRequest` arrives over the cross-thread channel and close it
-//! once the user clicks a choice (or cancels). cosmic-text under the hood
+//! when a `PickRequest` (or a `ConsentRequest`) arrives over its cross-thread
+//! channel and close it once the user clicks a choice (or cancels). cosmic-text under the hood
 //! handles font fallback, so CJK strings render without any font setup.
 //!
 //! Threading model:
@@ -34,10 +34,17 @@ pub struct PickRequest {
     pub responder: oneshot::Sender<PickResult>,
 }
 
-/// Handle the D-Bus side uses to request a pick. Cheap to clone.
+/// A RemoteDesktop session asking to control the pointer and keyboard.
+pub struct ConsentRequest {
+    pub app_name: String,
+    pub responder: oneshot::Sender<bool>,
+}
+
+/// Handle the D-Bus side uses to request a pick or a consent answer. Cheap to clone.
 #[derive(Clone)]
 pub struct PickerHandle {
     tx: mpsc::UnboundedSender<PickRequest>,
+    consent_tx: mpsc::UnboundedSender<ConsentRequest>,
 }
 
 impl PickerHandle {
@@ -49,6 +56,24 @@ impl PickerHandle {
         }
         rx.await.unwrap_or(PickResult::Cancelled)
     }
+
+    /// Ask the user whether `app_name` may control the pointer and keyboard.
+    /// Closing the dialog counts as a refusal.
+    pub async fn ask_remote_control(&self, app_name: String) -> bool {
+        let (responder, rx) = oneshot::channel();
+        if self
+            .consent_tx
+            .send(ConsentRequest {
+                app_name,
+                responder,
+            })
+            .is_err()
+        {
+            tracing::error!("picker thread is gone");
+            return false;
+        }
+        rx.await.unwrap_or(false)
+    }
 }
 
 type ReceiverSlot = Mutex<Option<mpsc::UnboundedReceiver<PickRequest>>>;
@@ -57,17 +82,28 @@ static PICKER_RX: OnceLock<ReceiverSlot> = OnceLock::new();
 type ThumbnailRxSlot = Mutex<Option<mpsc::UnboundedReceiver<ThumbnailUpdate>>>;
 static THUMBNAIL_RX: OnceLock<ThumbnailRxSlot> = OnceLock::new();
 
+type ConsentRxSlot = Mutex<Option<mpsc::UnboundedReceiver<ConsentRequest>>>;
+static CONSENT_RX: OnceLock<ConsentRxSlot> = OnceLock::new();
+
 pub fn setup() -> (PickerHandle, mpsc::UnboundedSender<ThumbnailUpdate>) {
     let (tx, rx) = mpsc::unbounded_channel();
     let _ = PICKER_RX.set(Mutex::new(Some(rx)));
     let (thumb_tx, thumb_rx) = mpsc::unbounded_channel();
     let _ = THUMBNAIL_RX.set(Mutex::new(Some(thumb_rx)));
-    (PickerHandle { tx }, thumb_tx)
+    let (consent_tx, consent_rx) = mpsc::unbounded_channel();
+    let _ = CONSENT_RX.set(Mutex::new(Some(consent_rx)));
+    (PickerHandle { tx, consent_tx }, thumb_tx)
 }
 
 pub fn run_on_main_thread() -> iced::Result {
     iced::daemon(|| (State::default(), Task::none()), update, view)
-        .title(|_state: &State, _id: window::Id| i18n::t("picker.window_title"))
+        .title(|state: &State, id: window::Id| {
+            if state.consent_window == Some(id) {
+                i18n::t("remote_control.window_title")
+            } else {
+                i18n::t("picker.window_title")
+            }
+        })
         .subscription(subscription)
         .run()
 }
@@ -76,6 +112,13 @@ pub fn run_on_main_thread() -> iced::Result {
 struct State {
     active: Option<Active>,
     window_id: Option<window::Id>,
+    consent: Option<Consent>,
+    consent_window: Option<window::Id>,
+}
+
+struct Consent {
+    app_name: String,
+    responder: Option<oneshot::Sender<bool>>,
 }
 
 struct Active {
@@ -100,6 +143,18 @@ enum Message {
     Cancelled,
     TabSelected(Tab),
     ThumbnailUpdate(ThumbnailUpdate),
+    ConsentArrived(ConsentArrived),
+    ConsentAnswered(bool),
+}
+
+/// Boxed consent request so Message can stay `Clone`.
+#[derive(Clone)]
+struct ConsentArrived(std::sync::Arc<Mutex<Option<ConsentRequest>>>);
+
+impl std::fmt::Debug for ConsentArrived {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ConsentArrived")
+    }
 }
 
 /// `(picked sources, responder)` handed off to the picker's request handler.
@@ -138,6 +193,53 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::WindowOpened(_id) => Task::none(),
+        Message::ConsentArrived(arrived) => {
+            let Some(request) = arrived.0.lock().unwrap().take() else {
+                return Task::none();
+            };
+            // One question at a time: a newer request replaces an open one,
+            // and the older asker gets a refusal.
+            if let Some(mut prev) = state.consent.take()
+                && let Some(r) = prev.responder.take()
+            {
+                let _ = r.send(false);
+            }
+            state.consent = Some(Consent {
+                app_name: request.app_name,
+                responder: Some(request.responder),
+            });
+            if state.consent_window.is_some() {
+                Task::none()
+            } else {
+                let (id, open_task) = window::open(window::Settings {
+                    size: iced::Size::new(460.0, 200.0),
+                    min_size: Some(iced::Size::new(360.0, 180.0)),
+                    ..Default::default()
+                });
+                state.consent_window = Some(id);
+                open_task.map(Message::WindowOpened)
+            }
+        }
+        Message::ConsentAnswered(allowed) => {
+            if let Some(mut consent) = state.consent.take()
+                && let Some(r) = consent.responder.take()
+            {
+                let _ = r.send(allowed);
+            }
+            match state.consent_window.take() {
+                Some(id) => window::close(id),
+                None => Task::none(),
+            }
+        }
+        Message::WindowClosed(id) if state.consent_window == Some(id) => {
+            state.consent_window = None;
+            if let Some(mut consent) = state.consent.take()
+                && let Some(r) = consent.responder.take()
+            {
+                let _ = r.send(false);
+            }
+            Task::none()
+        }
         Message::WindowClosed(id) => {
             if state.window_id == Some(id) {
                 state.window_id = None;
@@ -191,7 +293,10 @@ where
     }
 }
 
-fn view(state: &State, _id: window::Id) -> Element<'_, Message> {
+fn view(state: &State, id: window::Id) -> Element<'_, Message> {
+    if state.consent_window == Some(id) {
+        return consent_view(state);
+    }
     let Some(active) = state.active.as_ref() else {
         return container(text(i18n::t("picker.idle"))).padding(16).into();
     };
@@ -293,6 +398,34 @@ fn view(state: &State, _id: window::Id) -> Element<'_, Message> {
         .into()
 }
 
+fn consent_view(state: &State) -> Element<'_, Message> {
+    let Some(consent) = state.consent.as_ref() else {
+        return container(text(i18n::t("picker.idle"))).padding(16).into();
+    };
+    let body = i18n::t_args("remote_control.body", &[("app", &consent.app_name)]);
+    let footer = row![
+        space::horizontal(),
+        button(text(i18n::t("remote_control.deny")))
+            .style(button::secondary)
+            .on_press(Message::ConsentAnswered(false)),
+        button(text(i18n::t("remote_control.allow")))
+            .style(button::primary)
+            .on_press(Message::ConsentAnswered(true)),
+    ]
+    .spacing(8);
+    container(
+        column![
+            text(i18n::t("remote_control.heading")).size(18),
+            text(body).size(14),
+            space::vertical(),
+            footer,
+        ]
+        .spacing(12),
+    )
+    .padding(16)
+    .into()
+}
+
 fn tab_button(label: String, selected: bool, kind: Tab) -> Element<'static, Message> {
     let btn = button(text(label));
     let btn = if selected {
@@ -331,7 +464,19 @@ fn subscription(_state: &State) -> Subscription<Message> {
         UnboundedReceiverStream::new(rx).map(Message::ThumbnailUpdate)
     });
 
+    let consent_stream = Subscription::run(|| {
+        let rx = CONSENT_RX
+            .get()
+            .expect("picker::setup() not called before run_on_main_thread")
+            .lock()
+            .unwrap()
+            .take()
+            .expect("consent subscription started twice");
+        UnboundedReceiverStream::new(rx)
+            .map(|req| Message::ConsentArrived(ConsentArrived(std::sync::Arc::new(Mutex::new(Some(req))))))
+    });
+
     let close_events = window::close_events().map(Message::WindowClosed);
 
-    Subscription::batch([request_stream, thumbnail_stream, close_events])
+    Subscription::batch([request_stream, thumbnail_stream, consent_stream, close_events])
 }

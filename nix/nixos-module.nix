@@ -49,7 +49,7 @@ in
     portal.enable = lib.mkOption {
       type = lib.types.bool;
       default = true;
-      description = "Whether to enable xdg-desktop-portal-shojiwm for screen capture.";
+      description = "Whether to enable xdg-desktop-portal-shojiwm for screen capture and remote input.";
     };
 
     portal.gtkFallback = lib.mkOption {
@@ -179,6 +179,7 @@ in
       config.ShojiWM =
         {
           "org.freedesktop.impl.portal.ScreenCast" = [ "shojiwm" ];
+          "org.freedesktop.impl.portal.RemoteDesktop" = [ "shojiwm" ];
         }
         // lib.optionalAttrs cfg.portal.gtkFallback {
           default = [ "gtk" ];

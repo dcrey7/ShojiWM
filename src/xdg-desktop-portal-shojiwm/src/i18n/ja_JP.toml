@@ -14,3 +14,11 @@ cancel = "キャンセル"
 [source]
 window = "ウィンドウ"
 window_with_id = "ウィンドウ — {id}"
+
+[remote_control]
+window_title = "ShojiWM — リモート操作"
+heading = "リモート操作を許可しますか？"
+body = "{app} がポインターとキーボードの操作を求めています。"
+unknown_app = "アプリケーション"
+allow = "許可"
+deny = "拒否"
