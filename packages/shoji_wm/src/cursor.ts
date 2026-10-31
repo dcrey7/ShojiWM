@@ -61,11 +61,15 @@ function normalizeConfig(config: CursorConfig): CursorConfig {
     );
   }
 
-  return { theme, size };
+  return { theme, size, remote: cloneRemote(config.remote) };
+}
+
+function cloneRemote(remote: CursorConfig["remote"]): CursorConfig["remote"] {
+  return remote ? { ...remote } : undefined;
 }
 
 function cloneConfig(config: CursorConfig): CursorConfig {
-  return { theme: config.theme, size: config.size };
+  return { theme: config.theme, size: config.size, remote: cloneRemote(config.remote) };
 }
 
 function publishCursorEnvironment(config: CursorConfig): void {

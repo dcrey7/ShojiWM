@@ -47,6 +47,41 @@ impl Default for RemoteCursorStyle {
     }
 }
 
+impl RemoteCursorStyle {
+    /// Fill missing fields with the defaults; out-of-range values fall back
+    /// to the default too, so a typo never breaks the cursor.
+    pub fn from_config(config: Option<&crate::cursor::RuntimeRemoteCursorConfig>) -> Self {
+        let defaults = Self::default();
+        let Some(config) = config else {
+            return defaults;
+        };
+        let speed = config
+            .speed
+            .filter(|s| s.is_finite() && *s > 0.0 && *s <= 10.0)
+            .unwrap_or(defaults.speed);
+        let scale = config
+            .scale
+            .filter(|s| s.is_finite() && *s >= 1.0 && *s <= 4.0)
+            .unwrap_or(defaults.scale);
+        let ring = match config.ring.as_deref() {
+            None => defaults.ring,
+            Some("none") => None,
+            Some(hex) => parse_hex_rgb(hex).or(defaults.ring),
+        };
+        Self { speed, scale, ring }
+    }
+}
+
+/// "#rrggbb" to RGB bytes.
+fn parse_hex_rgb(text: &str) -> Option<[u8; 3]> {
+    let hex = text.strip_prefix('#')?;
+    if hex.len() != 6 || !hex.is_ascii() {
+        return None;
+    }
+    let byte = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).ok();
+    Some([byte(0)?, byte(2)?, byte(4)?])
+}
+
 #[derive(Debug, Default)]
 pub struct RemotePointer {
     pub style: RemoteCursorStyle,
@@ -128,6 +163,21 @@ impl RemotePointer {
 mod tests {
     use super::*;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn style_from_config_fills_defaults_and_parses_colours() {
+        use crate::cursor::RuntimeRemoteCursorConfig as C;
+        assert_eq!(RemoteCursorStyle::from_config(None), RemoteCursorStyle::default());
+        let c = C { speed: Some(2.0), scale: None, ring: Some("#ff0080".into()) };
+        let s = RemoteCursorStyle::from_config(Some(&c));
+        assert_eq!((s.speed, s.scale, s.ring), (2.0, 1.5, Some([0xff, 0x00, 0x80])));
+        let none = C { speed: None, scale: Some(1.0), ring: Some("none".into()) };
+        assert_eq!(RemoteCursorStyle::from_config(Some(&none)).ring, None);
+        // Bad values fall back instead of breaking the cursor.
+        let bad = C { speed: Some(-1.0), scale: Some(99.0), ring: Some("blue".into()) };
+        let s = RemoteCursorStyle::from_config(Some(&bad));
+        assert_eq!((s.speed, s.scale, s.ring), (1.0, 1.5, Some([0x3d, 0xae, 0xe9])));
+    }
 
     #[test]
     fn gain_is_one_when_slow_and_four_when_fast() {

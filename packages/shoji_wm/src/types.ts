@@ -2303,6 +2303,18 @@ export interface CursorConfig {
   theme: string;
   /** Cursor size in logical pixels. / 論理ピクセル単位のカーソルサイズ。 */
   size: number;
+  /** Look and speed while a phone (EIS remote input) drives the pointer. / スマートフォン（EIS リモート入力）操作中のカーソル。 */
+  remote?: RemoteCursorConfig;
+}
+
+/** Remote cursor style. Every field is optional. / リモートカーソルの設定（すべて任意）。 */
+export interface RemoteCursorConfig {
+  /** Multiplier on top of the phone acceleration curve. Default 1. / 加速カーブに掛ける倍率（既定 1）。 */
+  speed?: number;
+  /** Cursor size multiplier while a phone drives. Default 1.5. / 操作中のカーソル拡大率（既定 1.5）。 */
+  scale?: number;
+  /** Ring colour "#rrggbb", or "none". Default "#3daee9". / リングの色、または "none"（既定 "#3daee9"）。 */
+  ring?: string;
 }
 
 /** @internal Wire payload sent to the compositor runtime. */

@@ -19,6 +19,22 @@ pub struct RuntimeCursorConfigUpdate {
     pub size: u32,
     #[serde(default)]
     pub reload: bool,
+    /// How the cursor looks and moves while a phone (EIS) drives it.
+    #[serde(default)]
+    pub remote: Option<RuntimeRemoteCursorConfig>,
+}
+
+/// `COMPOSITOR.cursor.configure({ remote })`. Every field is optional; see
+/// `remote_pointer::RemoteCursorStyle::from_config` for defaults and limits.
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeRemoteCursorConfig {
+    #[serde(default)]
+    pub speed: Option<f64>,
+    #[serde(default)]
+    pub scale: Option<f64>,
+    #[serde(default)]
+    pub ring: Option<String>,
 }
 
 /// `COMPOSITOR.cursor.setPosition`: where to move the cursor.
@@ -215,18 +231,31 @@ mod tests {
             theme: "__shojiwm_test_missing_theme__".into(),
             size: 24,
             reload: false,
+            remote: None,
         }));
         assert!(cursor.apply_runtime_config(RuntimeCursorConfigUpdate {
             theme: "__shojiwm_test_missing_theme__".into(),
             size: 24,
             reload: true,
+            remote: None,
         }));
         assert!(cursor.apply_runtime_config(RuntimeCursorConfigUpdate {
             theme: "__shojiwm_test_missing_theme__".into(),
             size: 48,
             reload: false,
+            remote: None,
         }));
         assert_eq!(cursor.size(), 48);
+    }
+
+    #[test]
+    fn cursor_config_accepts_optional_remote() {
+        let v = serde_json::json!({"theme": "breeze_cursors", "size": 24, "reload": false, "remote": {"speed": 1.5}});
+        let u: RuntimeCursorConfigUpdate = serde_json::from_value(v).unwrap();
+        assert_eq!(u.remote.unwrap().speed, Some(1.5));
+        let v = serde_json::json!({"theme": "breeze_cursors", "size": 24, "reload": false});
+        let u: RuntimeCursorConfigUpdate = serde_json::from_value(v).unwrap();
+        assert!(u.remote.is_none());
     }
 
     #[test]
@@ -237,11 +266,13 @@ mod tests {
             theme: String::new(),
             size: 24,
             reload: true,
+            remote: None,
         }));
         assert!(!cursor.apply_runtime_config(RuntimeCursorConfigUpdate {
             theme: "default".into(),
             size: 513,
             reload: true,
+            remote: None,
         }));
         assert_eq!(cursor.size(), 24);
     }

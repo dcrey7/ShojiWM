@@ -247,6 +247,7 @@ impl CursorController {
                 theme: theme.to_owned(),
                 size,
                 reload: false,
+                remote: None,
             });
         });
     }

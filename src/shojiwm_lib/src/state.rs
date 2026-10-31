@@ -664,6 +664,8 @@ pub struct ShojiWM {
     pub cursor_override: Option<CursorIcon>,
     pub cursor_theme: Cursor,
     pub pointer_images: Vec<(Image, MemoryRenderBuffer)>,
+    /// Phone (EIS) pointer: REMOTE/LOCAL mode, acceleration, and remote cursor style.
+    pub remote_pointer: crate::remote_pointer::RemotePointer,
     pub current_pointer_image: Option<Image>,
     pub pointer_element: PointerElement,
     pub text_rasterizer: TextRasterizer,
@@ -1961,6 +1963,7 @@ impl ShojiWM {
             cursor_override: None,
             cursor_theme: Cursor::load(),
             pointer_images: Vec::new(),
+            remote_pointer: Default::default(),
             current_pointer_image: None,
             pointer_element: PointerElement::default(),
             text_rasterizer: TextRasterizer::new(Some(async_asset_job_sender.clone())),
@@ -4022,6 +4025,15 @@ impl ShojiWM {
         &mut self,
         update: crate::cursor::RuntimeCursorConfigUpdate,
     ) {
+        // Before the theme check below: a change to `remote` alone must
+        // still take effect.
+        let style = crate::remote_pointer::RemoteCursorStyle::from_config(update.remote.as_ref());
+        if style != self.remote_pointer.style {
+            self.remote_pointer.style = style;
+            self.pointer_images.clear();
+            self.current_pointer_image = None;
+            self.schedule_redraw();
+        }
         if !self.cursor_theme.apply_runtime_config(update) {
             return;
         }
