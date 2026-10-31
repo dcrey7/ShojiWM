@@ -40,6 +40,7 @@ pub mod config;
 pub mod config_error;
 pub mod control_socket;
 pub mod eis;
+pub mod remote_pointer;
 pub mod cursor;
 pub mod frame_pacing;
 pub mod drawing;
