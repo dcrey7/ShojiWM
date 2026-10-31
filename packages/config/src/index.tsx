@@ -29,6 +29,9 @@ import {
   Popup,
   type ReadonlySignal,
   DefaultComposition,
+  animationVariable,
+  cubicBezier,
+  easeOut,
 } from "shoji_wm";
 import type {
   CompositionRenderable,
@@ -1802,64 +1805,152 @@ function titlebarButtonAt(window: WaylandWindow, x: number, y: number): Titlebar
   }
   return null;
 }
-const TRAFFIC_LIGHT_BORDER = "#00000033";
-const TRAFFIC_LIGHT_COLORS = {
-  close: "#FF5F57",
-  minimize: "#FEBC2E",
-  maximize: "#28C840",
-  inactive: "#FFFFFF30",
+/**
+ * macOS 27 glass lights: a saturated body, a lighter glow in its lower half
+ * and thin bright rims, drawn from SVGs (see `assets/mac-glass-*.svg`).
+ * Unfocused windows show grey glass.
+ */
+const TRAFFIC_LIGHT_BODIES = {
+  close: "./assets/mac-glass-close.svg",
+  minimize: "./assets/mac-glass-minimize.svg",
+  maximize: "./assets/mac-glass-maximize.svg",
+  inactive: "./assets/mac-glass-inactive.svg",
+};
+
+/**
+ * Like macOS 27, a light grows a little under the pointer and more while it
+ * is pressed, then springs back. The values add to a scale of 1.
+ */
+const TRAFFIC_LIGHT_HOVER_GROW = 0.1;
+const TRAFFIC_LIGHT_PRESS_GROW = 0.24;
+const TRAFFIC_LIGHT_GROW_MS = 150;
+const TRAFFIC_LIGHT_SPRING_MS = 220;
+/** Overshoots a little before it settles: the macOS 27 bounce. */
+const TRAFFIC_LIGHT_SPRING = cubicBezier(0.34, 1.56, 0.64, 1);
+const TRAFFIC_LIGHT_GROW = {
+  close: animationVariable("trafficLightGrow.close"),
+  minimize: animationVariable("trafficLightGrow.minimize"),
+  maximize: animationVariable("trafficLightGrow.maximize"),
 };
 
 // The Window View's hovered card shows colour, like a focused window.
-const trafficLightColor = (window: WaylandWindow, color: string) =>
+const trafficLightBody = (window: WaylandWindow, body: string) =>
   computed(() =>
     window.isFocused() || isWindowViewCard(window)
-      ? color
-      : TRAFFIC_LIGHT_COLORS.inactive,
+      ? body
+      : TRAFFIC_LIGHT_BODIES.inactive,
   );
 
-const trafficLightStyle = (background: string | ReadonlySignal<string>) => ({
-  width: TRAFFIC_LIGHT_SIZE,
-  height: TRAFFIC_LIGHT_SIZE,
-  borderRadius: TRAFFIC_LIGHT_SIZE / 2,
-  background,
-  border: { px: 1, color: TRAFFIC_LIGHT_BORDER },
-});
-
-/** The dark glyph that shows on a traffic light while the pointer is on it. */
-const TrafficLightGlyph = ({
-  src,
+/**
+ * One traffic light: the glass body, a click target over it, and a glyph
+ * while the pointer is on it. Hover and press grow the whole light from its
+ * centre.
+ */
+const TrafficLight = ({
+  window,
+  kind,
+  body,
+  glyph,
+  enabled,
+  onClick,
+  tooltip,
 }: {
-  src: string | ReadonlySignal<string>;
-}) => (
-  <Image
-    src={src}
-    style={{
-      width: TRAFFIC_LIGHT_SIZE,
-      height: TRAFFIC_LIGHT_SIZE,
-      position: "absolute",
-      zIndex: 1,
-      pointerEvents: "none",
-    }}
-  />
-);
-
-const CloseButton = ({ window }: { window: WaylandWindow }) => {
+  window: WaylandWindow;
+  kind: keyof typeof TRAFFIC_LIGHT_GROW;
+  body: string | ReadonlySignal<string>;
+  glyph: string | ReadonlySignal<string>;
+  enabled: () => boolean;
+  onClick: () => void;
+  tooltip?: CompositionRenderable | null;
+}) => {
   const [hover, setHover] = useState(false);
+  const [pressed, setPressed] = useState(false);
+  const grow = TRAFFIC_LIGHT_GROW[kind];
+
+  const animateGrow = () => {
+    const isPressed = read(pressed);
+    const target = !enabled()
+      ? 0
+      : isPressed
+        ? TRAFFIC_LIGHT_PRESS_GROW
+        : read(hover)
+          ? TRAFFIC_LIGHT_HOVER_GROW
+          : 0;
+    // The press and its release spring; a plain hover eases.
+    const spring = isPressed || window.animation.variable(grow).peek() > TRAFFIC_LIGHT_HOVER_GROW;
+    window.animation.start(grow, {
+      duration: spring ? TRAFFIC_LIGHT_SPRING_MS : TRAFFIC_LIGHT_GROW_MS,
+      to: target,
+      easing: spring ? TRAFFIC_LIGHT_SPRING : easeOut,
+    });
+  };
 
   return (
-    <Box style={{ position: "relative", flexShrink: 0 }}>
-      <Button
-        onHoverChange={setHover}
-        style={trafficLightStyle(
-          trafficLightColor(window, TRAFFIC_LIGHT_COLORS.close),
-        )}
-        onClick={window.close}
+    <Box
+      style={{
+        position: "relative",
+        flexShrink: 0,
+        width: TRAFFIC_LIGHT_SIZE,
+        height: TRAFFIC_LIGHT_SIZE,
+        transform: { scale: window.animation.variable(grow)((value) => 1 + value) },
+      }}
+    >
+      <Image
+        src={body}
+        style={{
+          width: TRAFFIC_LIGHT_SIZE,
+          height: TRAFFIC_LIGHT_SIZE,
+          position: "absolute",
+          pointerEvents: "none",
+        }}
       />
-      {hover() ? <TrafficLightGlyph src="./assets/mac-x.svg" /> : null}
+      <Button
+        onHoverChange={(value) => {
+          setHover(value);
+          if (!value) {
+            setPressed(false);
+          }
+          animateGrow();
+        }}
+        onActiveChange={(value) => {
+          setPressed(value);
+          animateGrow();
+        }}
+        style={{
+          width: TRAFFIC_LIGHT_SIZE,
+          height: TRAFFIC_LIGHT_SIZE,
+          borderRadius: TRAFFIC_LIGHT_SIZE / 2,
+        }}
+        onClick={onClick}
+      />
+      {hover() && enabled() ? (
+        <Image
+          src={glyph}
+          style={{
+            width: TRAFFIC_LIGHT_SIZE,
+            height: TRAFFIC_LIGHT_SIZE,
+            position: "absolute",
+            zIndex: 1,
+            pointerEvents: "none",
+          }}
+        />
+      ) : null}
+      {tooltip ?? null}
     </Box>
   );
 };
+
+const CloseButton = ({ window }: { window: WaylandWindow }) => (
+  <TrafficLight
+    window={window}
+    kind="close"
+    body={trafficLightBody(window, TRAFFIC_LIGHT_BODIES.close)}
+    glyph="./assets/mac-glass-x.svg"
+    enabled={() => true}
+    onClick={window.close}
+  />
+);
+
 
 /** How long the pointer has to rest on a title bar button before its tooltip shows. */
 const TOOLTIP_DELAY_MS = 500;
@@ -1904,73 +1995,58 @@ const TitlebarTooltip = ({
 );
 
 const MaximizeButton = ({ window }: { window: WaylandWindow }) => {
-  const [hover, setHover] = useState(false);
-
   // A window that cannot resize gets a grey light, like on macOS.
-  const background = computed(() => {
-    if (!window.isResizable() || !(window.isFocused() || isWindowViewCard(window))) {
-      return TRAFFIC_LIGHT_COLORS.inactive;
-    }
-    return TRAFFIC_LIGHT_COLORS.maximize;
-  });
-  const shouldHover = computed(() => hover() && window.isResizable());
-
-  var icon: CompositionRenderable | null = null;
-  if (shouldHover()) {
-    const src = window.isMaximized((maximized) => {
-      return maximized
-        ? "./assets/mac-minimize-2.svg"
-        : "./assets/mac-maximize-2.svg";
-    });
-
-    icon = <TrafficLightGlyph src={src} />;
-  }
+  const body = computed(() =>
+    window.isResizable() && (window.isFocused() || isWindowViewCard(window))
+      ? TRAFFIC_LIGHT_BODIES.maximize
+      : TRAFFIC_LIGHT_BODIES.inactive,
+  );
+  // macOS's full screen glyph: triangles out to maximize, in to restore.
+  const glyph = window.isMaximized((maximized) =>
+    maximized ? "./assets/mac-glass-shrink.svg" : "./assets/mac-glass-expand.svg",
+  );
 
   return (
-    <Box style={{ position: "relative", flexShrink: 0 }}>
-      <Button
-        onHoverChange={setHover}
-        style={trafficLightStyle(background)}
-        onClick={() => {
-          if (!read(window.isResizable)) {
-            return;
-          }
+    <TrafficLight
+      window={window}
+      kind="maximize"
+      body={body}
+      glyph={glyph}
+      enabled={() => read(window.isResizable)}
+      onClick={() => {
+        if (!read(window.isResizable)) {
+          return;
+        }
 
-          if (read(window.isMaximized)) {
-            window.unmaximize();
-          } else {
-            window.maximize();
-          }
-        }}
-      />
-      {icon}
-      {window.isResizable() ? (
-        <TitlebarTooltip
-          text={window.isMaximized((maximized) =>
-            maximized ? "Restore" : "Maximize",
-          )}
-        />
-      ) : null}
-    </Box>
+        if (read(window.isMaximized)) {
+          window.unmaximize();
+        } else {
+          window.maximize();
+        }
+      }}
+      tooltip={
+        window.isResizable() ? (
+          <TitlebarTooltip
+            text={window.isMaximized((maximized) =>
+              maximized ? "Restore" : "Maximize",
+            )}
+          />
+        ) : null
+      }
+    />
   );
 };
 
-const MinimizeButton = ({ window }: { window: WaylandWindow }) => {
-  const [hover, setHover] = useState(false);
-
-  return (
-    <Box style={{ position: "relative", flexShrink: 0 }}>
-      <Button
-        onHoverChange={setHover}
-        style={trafficLightStyle(
-          trafficLightColor(window, TRAFFIC_LIGHT_COLORS.minimize),
-        )}
-        onClick={() => window.minimize()}
-      />
-      {hover() ? <TrafficLightGlyph src="./assets/mac-minus.svg" /> : null}
-      <TitlebarTooltip text="Minimize" />
-    </Box>
-  );
-};
+const MinimizeButton = ({ window }: { window: WaylandWindow }) => (
+  <TrafficLight
+    window={window}
+    kind="minimize"
+    body={trafficLightBody(window, TRAFFIC_LIGHT_BODIES.minimize)}
+    glyph="./assets/mac-glass-minus.svg"
+    enabled={() => true}
+    onClick={() => window.minimize()}
+    tooltip={<TitlebarTooltip text="Minimize" />}
+  />
+);
 
 export default COMPOSITOR;
