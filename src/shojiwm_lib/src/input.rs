@@ -202,6 +202,56 @@ impl ShojiWM {
         }
     }
 
+    /// Records whether a phone (EIS) or a real device drives the pointer and
+    /// returns true for EIS. Arms a one-shot timer on entering REMOTE so the
+    /// remote look fades out after the idle timeout even with no other redraw.
+    fn note_pointer_source<D: smithay::backend::input::Device>(&mut self, device: &D) -> bool {
+        let now = std::time::Instant::now();
+        let remote = smithay::backend::input::Device::id(device).starts_with("ei-");
+        let was_remote = self.remote_pointer.is_remote(now);
+        if remote {
+            self.remote_pointer.note_remote_activity(now);
+        } else {
+            self.remote_pointer.note_local_activity(now);
+        }
+        if remote != was_remote {
+            tracing::info!(remote, "pointer source changed");
+            if remote {
+                self.arm_remote_cursor_timer();
+            }
+            // The cursor image changes; the fast path alone would keep the old one.
+            self.pointer_images_dirty_for_remote();
+        }
+        remote
+    }
+
+    fn arm_remote_cursor_timer(&mut self) {
+        use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
+        let inserted = self.loop_handle.insert_source(
+            Timer::from_duration(crate::remote_pointer::IDLE),
+            |_, _, state| {
+                let now = std::time::Instant::now();
+                match state.remote_pointer.idle_deadline() {
+                    Some(deadline) if deadline > now => TimeoutAction::ToDuration(deadline - now),
+                    _ => {
+                        // Expired, or a local event ended it: redraw for the fade out.
+                        state.pointer_images_dirty_for_remote();
+                        TimeoutAction::Drop
+                    }
+                }
+            },
+        );
+        if let Err(error) = inserted {
+            tracing::warn!(%error, "failed to arm the remote cursor timer");
+        }
+    }
+
+    /// Force the next frame to rebuild the cursor image and render fully.
+    fn pointer_images_dirty_for_remote(&mut self) {
+        self.current_pointer_image = None;
+        self.schedule_redraw();
+    }
+
     fn pointer_motion_delta<D: smithay::backend::input::Device>(
         &self,
         device: &D,
@@ -1213,6 +1263,7 @@ impl ShojiWM {
                 }
             }
             InputEvent::PointerMotion { event, .. } => {
+                let remote = self.note_pointer_source(&event.device());
                 let pointer = self.seat.get_pointer().unwrap();
                 let previous_pos = pointer.current_location();
                 // Keep using the last focus while a constraint is active. Re-running hit testing
@@ -1275,8 +1326,18 @@ impl ShojiWM {
                 // relative-motion event forwarded to clients below keeps the
                 // raw delta: a pointer-locked client (an FPS-style game) wants
                 // the device's own motion, not one scaled to our pixel grid.
-                let motion_delta =
-                    self.pointer_motion_delta(&event.device(), event.delta(), previous_pos);
+                // A phone (EIS) gets the remote acceleration curve first;
+                // real devices pass through untouched.
+                let delta = if remote {
+                    let raw = event.delta();
+                    let (dx, dy) = self
+                        .remote_pointer
+                        .note_remote_motion((raw.x, raw.y), std::time::Instant::now());
+                    Point::from((dx, dy))
+                } else {
+                    event.delta()
+                };
+                let motion_delta = self.pointer_motion_delta(&event.device(), delta, previous_pos);
 
                 let Some(pos) = constrain_pointer_location_to_outputs(
                     previous_pos + motion_delta,
@@ -1373,6 +1434,7 @@ impl ShojiWM {
                 self.request_redraw_for_pointer_motion();
             }
             InputEvent::PointerMotionAbsolute { event, .. } => {
+                self.note_pointer_source(&event.device());
                 let Some(output_bounds) = self.output_layout_bounds() else {
                     return;
                 };
@@ -1430,6 +1492,7 @@ impl ShojiWM {
                 self.request_redraw_for_pointer_motion();
             }
             InputEvent::PointerButton { event, .. } => {
+                self.note_pointer_source(&event.device());
                 let pointer = self.seat.get_pointer().unwrap();
 
                 let serial = SERIAL_COUNTER.next_serial();
@@ -2088,6 +2151,7 @@ impl ShojiWM {
                 }
             }
             InputEvent::PointerAxis { event, .. } => {
+                self.note_pointer_source(&event.device());
                 let source = event.source();
                 let device = event.device();
                 let scroll_factor = crate::runtime_input::scroll_factor_for_backend_device(
