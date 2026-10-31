@@ -74,17 +74,16 @@ COMPOSITOR.cursor.configure({
 
 ## Testing
 
-Nested harness (`shojiwm-setup/tools/rdtest`), new stage 3:
-- EIS motion switches the mode to REMOTE. A real (winit) pointer motion
-  switches it back to LOCAL. After 3 s idle, the mode is LOCAL.
-- Curve: a slow delta passes 1:1. A fast delta is multiplied by at most 4.
-  Checked with the probe's motion coordinates.
-- Look: the debug IPC reports the mode and the ring alpha. Read the pixels
-  around the cursor from a screenshot through the existing screencopy.
-
-Unit tests:
-- the gain function (edges and the middle)
-- config parsing with fields missing
+The nested (winit) window cannot show this, because the host compositor
+draws its cursor. So:
+- Unit tests cover the gain curve, the mode and fade timing, config
+  parsing, and the composed image (arrow kept, ring at the radius, hotspot
+  moved with the padding).
+- The nested harness (`shojiwm-setup/tools/rdtest`) stages 1 and 2 must still
+  pass.
+- The compositor logs `pointer source changed remote=…` on every mode
+  switch.
+- Final check on the real tty session with the phone.
 
 ## Out of scope
 
@@ -94,5 +93,6 @@ Unit tests:
 
 ## Changelog
 
+- 2026-11-01 00:40 CET: testing section matched to the plan (winit draws no cursor).
 - 2026-11-01 00:19 CET: created from the brainstorming session. Approved: glow
   ring, acceleration.
