@@ -1408,6 +1408,26 @@ const AERO_PANEL_GLASS = compileEffect({
   pipeline: [dualKawaseBlur({ radius: 6, passes: 2 }), backdropFade()],
 });
 
+/**
+ * Blur behind plasmashell's popups on the Aero look (the start menu,
+ * notifications, tray popups, OSDs, tooltips). Under KWin plasmashell asks
+ * for it with KDE's blur protocol, which ShojiWM does not speak; the popups
+ * are rounded rects, so the blur is clipped to one.
+ */
+const AERO_POPUP_RADIUS = 6;
+const AERO_POPUP_GLASS = compileEffect({
+  input: backdropSource(),
+  capturePadding: 24,
+  invalidate: { kind: "on-source-damage-box", damagePadding: 8 },
+  alpha: "preserve",
+  pipeline: [
+    dualKawaseBlur({ radius: 6, passes: 2 }),
+    shaderStage(loadShader("./src/effect/rounded-mask.frag"), {
+      uniforms: { radius_px: AERO_POPUP_RADIUS },
+    }),
+  ],
+});
+
 /** A plasmashell window: the client surface where plasmashell asked. */
 function plasmaShellComposition(
   window: WaylandWindow,
@@ -1445,18 +1465,25 @@ function plasmaShellComposition(
       </ManagedWindow>
     );
   }
+  const aeroGlass = TITLEBAR_STYLE() === "aero" && !GLASS_PAUSED();
   return (
     <ManagedWindow rect={rect} zIndex={zIndex}>
       <WindowBorder
         style={{
           border: { px: 0, color: "#00000000" },
-          borderRadius: PLASMA_POPUP_RADIUS,
+          borderRadius: aeroGlass ? AERO_POPUP_RADIUS : PLASMA_POPUP_RADIUS,
           boxShadow: PLASMA_POPUP_SHADOW,
           background: "#00000000",
           padding: 0,
         }}
       >
-        <ClientWindow />
+        {aeroGlass ? (
+          <ShaderEffect shader={AERO_POPUP_GLASS} direction="column">
+            <ClientWindow />
+          </ShaderEffect>
+        ) : (
+          <ClientWindow />
+        )}
       </WindowBorder>
     </ManagedWindow>
   );
@@ -1691,7 +1718,7 @@ COMPOSITOR.window.composition = (window: WaylandWindow) => {
   // In the Window View only the hovered card shows them.
   const titlebarContent = !trafficLightsShown(window)
     ? [appIcon, label]
-    : TITLEBAR_STYLE() === "aero"
+    : usesAeroStrip(TITLEBAR_STYLE())
       ? [appIcon, label, <AeroCaptionButtons window={window} />]
       : [appIcon, label, minimizeButton, maximizeButton, closeButton];
   // Apps like Konsole and Dolphin draw a see-through background and ask for
@@ -1841,8 +1868,7 @@ COMPOSITOR.window.composition = (window: WaylandWindow) => {
 
 /**
  * The look of the title bars:
- * - "aero": dark Windows 7 Aero glass, one joined strip of buttons at the
- *   top right (see `AeroCaptionButtons`).
+ * - "aero": dark Windows 7 Aero glass, with the buttons `AERO_CAPTION` picks.
  * - "mac": macOS 27 glass traffic lights (see `TrafficLight`).
  *
  * The user picks it as a KDE Global Theme (or with the shoji-theme script);
@@ -1850,6 +1876,17 @@ COMPOSITOR.window.composition = (window: WaylandWindow) => {
  */
 type TitlebarStyle = "aero" | "mac";
 const TITLEBAR_STYLE = signal<TitlebarStyle>("aero");
+
+/**
+ * The buttons on the Aero title bar: "mac-lights" are the macOS 27 glass
+ * traffic lights (`TrafficLight`), "aero-strip" Windows 7's joined strip
+ * (`AeroCaptionButtons`).
+ */
+const AERO_CAPTION = "mac-lights" as "mac-lights" | "aero-strip";
+
+/** The title bar shows Windows 7's joined strip of buttons. */
+const usesAeroStrip = (style: TitlebarStyle) =>
+  style === "aero" && AERO_CAPTION === "aero-strip";
 WORKSPACE_IPC.handle("theme.set", (params) => {
   const style = (params as { titlebar?: unknown } | undefined)?.titlebar;
   if ((style === "aero" || style === "mac") && TITLEBAR_STYLE.peek() !== style) {
@@ -1913,7 +1950,7 @@ function titlebarButtonAt(window: WaylandWindow, x: number, y: number): Titlebar
   // From the right: close, maximize, minimize.
   const buttons: TitlebarButton[] = ["close", "maximize", "minimize"];
   const right = window.rect.width - WINDOW_BORDER_PX - TITLEBAR_PADDING_X;
-  if (TITLEBAR_STYLE.peek() === "aero") {
+  if (usesAeroStrip(TITLEBAR_STYLE.peek())) {
     // The strip hangs from the top of the title bar; a little slack below
     // it for a scaled-down card.
     if (y > WINDOW_BORDER_PX + AERO_BUTTON_HEIGHT + 4) {
