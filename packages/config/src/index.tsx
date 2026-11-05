@@ -1428,6 +1428,21 @@ const AERO_POPUP_GLASS = compileEffect({
   ],
 });
 
+/**
+ * Glass behind plasmashell's panel and popups. Not `GLASS_PAUSED`: that turns
+ * on for every window animation, and a tooltip sliding in is one. Each flip
+ * built the panel and every popup again, with and then without the blur, so
+ * the taskbar flickered on every hover. Only the look and a machine that is
+ * too slow switch it.
+ */
+const AERO_SHELL_GLASS = computed(() => TITLEBAR_STYLE() === "aero" && !qualityLight());
+
+/**
+ * Popups that get no blur: a tooltip comes and goes as the pointer crosses
+ * the taskbar, too fast for a blur pass to keep up with its size.
+ */
+const UNBLURRED_POPUP_ROLES = new Set(["tooltip"]);
+
 /** A plasmashell window: the client surface where plasmashell asked. */
 function plasmaShellComposition(
   window: WaylandWindow,
@@ -1449,7 +1464,7 @@ function plasmaShellComposition(
   const zIndex = PLASMA_Z_INDEX[plasma.role];
   // Aero: the taskbar is smoky glass, so blur what is behind it. KWin's
   // blur effect does this for AeroThemePlasma; the panel picture only tints.
-  if (plasma.role === "panel" && TITLEBAR_STYLE() === "aero" && !GLASS_PAUSED()) {
+  if (plasma.role === "panel" && AERO_SHELL_GLASS()) {
     return (
       <ManagedWindow rect={rect} zIndex={zIndex}>
         <ShaderEffect shader={AERO_PANEL_GLASS} direction="column">
@@ -1465,7 +1480,7 @@ function plasmaShellComposition(
       </ManagedWindow>
     );
   }
-  const aeroGlass = TITLEBAR_STYLE() === "aero" && !GLASS_PAUSED();
+  const aeroGlass = AERO_SHELL_GLASS() && !UNBLURRED_POPUP_ROLES.has(plasma.role);
   return (
     <ManagedWindow rect={rect} zIndex={zIndex}>
       <WindowBorder
@@ -1720,7 +1735,18 @@ COMPOSITOR.window.composition = (window: WaylandWindow) => {
     ? [appIcon, label]
     : usesAeroStrip(TITLEBAR_STYLE())
       ? [appIcon, label, <AeroCaptionButtons window={window} />]
-      : [appIcon, label, minimizeButton, maximizeButton, closeButton];
+      : [
+          appIcon,
+          label,
+          <Box
+            direction="row"
+            style={{ gap: TRAFFIC_LIGHT_GAP, alignItems: "center", flexShrink: 0 }}
+          >
+            {minimizeButton}
+            {maximizeButton}
+            {closeButton}
+          </Box>,
+        ];
   // Apps like Konsole and Dolphin draw a see-through background and ask for
   // blur behind it. Without the blur, a flat dark backdrop goes behind them
   // instead, so the text behind the window never shows through. One flat
@@ -1914,7 +1940,12 @@ function toggleMaximize(window: WaylandWindow) {
 }
 
 // macOS-style traffic lights. Unfocused windows show grey lights, as on macOS.
-const TRAFFIC_LIGHT_SIZE = 14;
+// macOS 27 draws 14 pt lights 23 pt apart, but a Mac screen has more pixels
+// per point than this 1x screen, so 16 px with a 10 px gap matches what the
+// eye sees on the Mac (the same size-to-pitch ratio: 23 / 14 ≈ 26 / 16).
+const TRAFFIC_LIGHT_SIZE = 16;
+/** Space between two traffic lights. */
+const TRAFFIC_LIGHT_GAP = 10;
 /** The title bar's padding left and right, and the space between its items. */
 const TITLEBAR_PADDING_X = 8;
 const TITLEBAR_GAP = 8;
@@ -1966,7 +1997,7 @@ function titlebarButtonAt(window: WaylandWindow, x: number, y: number): Titlebar
     }
     return null;
   }
-  const pitch = TRAFFIC_LIGHT_SIZE + TITLEBAR_GAP;
+  const pitch = TRAFFIC_LIGHT_SIZE + TRAFFIC_LIGHT_GAP;
   for (let i = 0; i < buttons.length; i++) {
     const center = right - TRAFFIC_LIGHT_SIZE / 2 - i * pitch;
     if (Math.abs(x - center) <= pitch / 2) {
