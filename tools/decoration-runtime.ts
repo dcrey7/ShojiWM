@@ -2777,6 +2777,24 @@ function writeCachedCompositionUpdate(
 
   const dirtyNodeIds = topLevelDirtyNodeIds(result.dirtyNodeIds ?? []);
   const previous = lastNativeCompositionByWindowId.get(windowId);
+  // A patch can only replace a node the compositor already has. When the
+  // tree it holds has another shape (it changed between two dirty marks),
+  // send the whole tree instead of a patch it cannot apply.
+  if (
+    previous === undefined ||
+    dirtyNodeIds.some((nodeId) => findSerializedNode(previous, nodeId) === undefined)
+  ) {
+    bridge.writeCompositionUpdate(requestId, {
+      kind: "full",
+      windowId,
+      tree: result.serialized,
+    });
+    lastNativeCompositionByWindowId.set(windowId, result.serialized);
+    if (cache) {
+      syncCompositionShaderUniformSlots(bridge, windowId, cache);
+    }
+    return;
+  }
   const uniformPatches =
     previous === undefined
       ? null

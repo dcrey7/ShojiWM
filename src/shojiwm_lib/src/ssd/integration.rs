@@ -401,6 +401,15 @@ fn apply_cached_tree_update(
     }
 }
 
+/// True when every patch names a node the cached tree has. A runtime whose
+/// tree changed shape since the compositor's copy can address a node the
+/// compositor never got; then the whole tree must be asked for instead.
+fn patch_targets_present(tree: &DecorationTree, patches: &[CompositionPatch]) -> bool {
+    patches
+        .iter()
+        .all(|patch| find_decoration_node(&tree.root, patch.node_id()).is_some())
+}
+
 fn find_decoration_node<'a>(
     node: &'a DecorationNode,
     stable_id: &str,
@@ -3576,6 +3585,25 @@ impl ShojiWM {
                                 }
                             }
                         };
+                        if evaluation.node.is_none()
+                            && !patch_targets_present(&cached.tree, &evaluation.node_patches)
+                        {
+                            warn!(
+                                window_id = %snapshot_id,
+                                title = %snapshot.title,
+                                "decoration patch names a node this window does not have; asking for the whole tree"
+                            );
+                            let actions = std::mem::take(&mut evaluation.actions);
+                            evaluation = self.config_runtime.evaluate_cached_window(
+                                &snapshot.id,
+                                None,
+                                now_ms,
+                                true,
+                            )?;
+                            let mut all_actions = actions;
+                            all_actions.append(&mut evaluation.actions);
+                            evaluation.actions = all_actions;
+                        }
                         let evaluate_ms = evaluate_started_at.elapsed().as_secs_f64() * 1000.0;
                         if runtime_dirty_debug_enabled() || minimize_debug {
                             info!(
@@ -4285,6 +4313,18 @@ impl ShojiWM {
                             force_full_cached_reevaluation,
                         )?
                     };
+                    if evaluation.node.is_none()
+                        && !patch_targets_present(
+                            &closing.decoration.tree,
+                            &evaluation.node_patches,
+                        )
+                    {
+                        // See the same check for live windows.
+                        pre_advance_actions.extend(std::mem::take(&mut evaluation.actions));
+                        evaluation =
+                            self.config_runtime
+                                .evaluate_cached_window(&window_id, None, now_ms, true)?;
+                    }
                     pre_advance_actions.extend(std::mem::take(&mut evaluation.actions));
                     if evaluation.managed_window_only {
                         // Once a native close animation has completed, its
@@ -8817,6 +8857,38 @@ mod tests {
             ),
             "patched label should replace the old subtree"
         );
+    }
+
+    #[test]
+    fn patch_targets_present_spots_a_node_the_tree_lacks() {
+        // The title bar was a ShaderEffect here; the runtime patched the
+        // close light under a title bar Box (the glass-paused shape).
+        let mut light = DecorationNode::new(DecorationNodeKind::Box(BoxNode {
+            direction: LayoutDirection::Row,
+        }));
+        light.stable_id = Some("root.ShaderEffect[0].Box[2].Box[2]".into());
+        let mut root = DecorationNode::new(DecorationNodeKind::Box(BoxNode {
+            direction: LayoutDirection::Column,
+        }))
+        .with_children(vec![light.clone()]);
+        root.stable_id = Some("root".into());
+        let tree = DecorationTree::new(root);
+
+        let patch = |node_id: &str| CompositionPatch::ReplaceNode {
+            node_id: node_id.into(),
+            node: light.clone(),
+        };
+        assert!(patch_targets_present(
+            &tree,
+            &[patch("root.ShaderEffect[0].Box[2].Box[2]")]
+        ));
+        assert!(!patch_targets_present(
+            &tree,
+            &[
+                patch("root.ShaderEffect[0].Box[2].Box[2]"),
+                patch("root.Box[0].Box[2].Box[2]"),
+            ]
+        ));
     }
 
     #[test]
