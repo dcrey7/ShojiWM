@@ -100,6 +100,17 @@ COMPOSITOR.env.apply({
   GLFW_IM_MODULE: "ibus",
   ELECTRON_OZONE_PLATFORM_HINT: "wayland",
 });
+// A Global Theme picked in System Settings writes its values into
+// ~/.config/kdedefaults; startplasma puts that folder first in
+// XDG_CONFIG_DIRS so KDE apps read it. Do the same, or the pick only half
+// applies (the Plasma theme stays, icons and widget style get lost).
+{
+  const kdeDefaults = `${COMPOSITOR.env.get("HOME") ?? ""}/.config/kdedefaults`;
+  const dirs = COMPOSITOR.env.get("XDG_CONFIG_DIRS") || "/etc/xdg";
+  if (!dirs.split(":").includes(kdeDefaults)) {
+    COMPOSITOR.env.set("XDG_CONFIG_DIRS", `${kdeDefaults}:${dirs}`);
+  }
+}
 COMPOSITOR.env.publish();
 
 COMPOSITOR.cursor.configure({
@@ -1388,6 +1399,15 @@ const PLASMA_POPUP_RADIUS = 8;
 const WINDOW_SOLID_BACKDROP = "#1b1e24";
 const PLASMA_POPUP_SHADOW = [{ y: 6, blur: 28, spread: 0, color: "#000000a0" }];
 
+/** Blur behind the Aero taskbar (see `plasmaShellComposition`). */
+const AERO_PANEL_GLASS = compileEffect({
+  input: backdropSource(),
+  capturePadding: 24,
+  invalidate: { kind: "on-source-damage-box", damagePadding: 8 },
+  alpha: "preserve",
+  pipeline: [dualKawaseBlur({ radius: 6, passes: 2 }), backdropFade()],
+});
+
 /** A plasmashell window: the client surface where plasmashell asked. */
 function plasmaShellComposition(
   window: WaylandWindow,
@@ -1407,6 +1427,17 @@ function plasmaShellComposition(
     };
   });
   const zIndex = PLASMA_Z_INDEX[plasma.role];
+  // Aero: the taskbar is smoky glass, so blur what is behind it. KWin's
+  // blur effect does this for AeroThemePlasma; the panel picture only tints.
+  if (plasma.role === "panel" && TITLEBAR_STYLE() === "aero" && !GLASS_PAUSED()) {
+    return (
+      <ManagedWindow rect={rect} zIndex={zIndex}>
+        <ShaderEffect shader={AERO_PANEL_GLASS} direction="column">
+          <ClientWindow />
+        </ShaderEffect>
+      </ManagedWindow>
+    );
+  }
   if (plasma.role === "panel" || plasma.role === "desktop") {
     return (
       <ManagedWindow rect={rect} zIndex={zIndex}>
