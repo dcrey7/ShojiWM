@@ -578,6 +578,18 @@ WORKSPACE_IPC.handle("debug.slidingPopups", (params) => {
 WORKSPACE_IPC.handle("debug.wobble", () => ({ runs: jellyDragDebug() }));
 WORKSPACE_IPC.handle("debug.quality", () => qualityDebug());
 WORKSPACE_IPC.handle("debug.tabDrag", () => ({ events: tabDragDebug() }));
+// Runs what the title bar's maximize button runs, for tests with no pointer.
+WORKSPACE_IPC.handle("debug.maximizeButton", (params) => {
+  const windowId = (params as { windowId?: string } | undefined)?.windowId;
+  const window =
+    typeof windowId === "string" ? HYBRID_WINDOW_MANAGER.findWindowById(windowId) : undefined;
+  if (!window) {
+    return null;
+  }
+  const before = read(window.isMaximized);
+  toggleMaximize(window);
+  return { before, after: read(window.isMaximized), resizable: read(window.isResizable) };
+});
 
 WORKSPACE_IPC.handle("debug.magicLamp", (params) => ({
   runs: magicLampDebug(
@@ -1821,6 +1833,18 @@ WORKSPACE_IPC.handle("theme.set", (params) => {
  */
 const AERO_BUTTON_FINISH = "glass" as "flat" | "glass";
 
+/** What a title bar's maximize button does. A window that cannot resize stays. */
+function toggleMaximize(window: WaylandWindow) {
+  if (!read(window.isResizable)) {
+    return;
+  }
+  if (read(window.isMaximized)) {
+    window.unmaximize();
+  } else {
+    window.maximize();
+  }
+}
+
 // macOS-style traffic lights. Unfocused windows show grey lights, as on macOS.
 const TRAFFIC_LIGHT_SIZE = 14;
 /** The title bar's padding left and right, and the space between its items. */
@@ -2046,17 +2070,7 @@ const MaximizeButton = ({ window }: { window: WaylandWindow }) => {
       body={body}
       glyph={glyph}
       enabled={() => read(window.isResizable)}
-      onClick={() => {
-        if (!read(window.isResizable)) {
-          return;
-        }
-
-        if (read(window.isMaximized)) {
-          window.unmaximize();
-        } else {
-          window.maximize();
-        }
-      }}
+      onClick={() => toggleMaximize(window)}
     />
   );
 };
@@ -2187,16 +2201,7 @@ const AeroCaptionButtons = ({ window }: { window: WaylandWindow }) => (
           maximized ? `./assets/aero-${AERO_BUTTON_FINISH}-glyph-restore.svg` : `./assets/aero-${AERO_BUTTON_FINISH}-glyph-maximize.svg`,
         )}
         enabled={() => read(window.isResizable)}
-        onClick={() => {
-          if (!read(window.isResizable)) {
-            return;
-          }
-          if (read(window.isMaximized)) {
-            window.unmaximize();
-          } else {
-            window.maximize();
-          }
-        }}
+        onClick={() => toggleMaximize(window)}
       />
       <AeroButton
         window={window}

@@ -1864,6 +1864,13 @@ export class HybridWindowManager {
 
   public onWindowMaximizeRequest(event: WindowMaximizeRequestEvent) {
     const workspace = this.findWorkspaceForWindow(event.window);
+    noteTabDrag({
+      kind: "maximize-request",
+      id: event.window.id,
+      maximized: event.maximized,
+      dropped: this.isGrabbing,
+      mode: workspace?.mode,
+    });
     if (this.isGrabbing) {
       return;
     }
@@ -6120,7 +6127,9 @@ export class Workspace {
     return tileable.filter((window) => cells.has(window.id)).map((window) => {
       const rect = window.state[WINDOW_STATE_FULLSCREEN]()
         ? this.fullscreenRootRect(window)
-        : this.fitTileInCell(window, cells.get(window.id) ?? area);
+        : window.state[WINDOW_STATE_MAXIMIZED]()
+          ? this.maximizedTiledRect(window)
+          : this.fitTileInCell(window, cells.get(window.id) ?? area);
       return { window, rect };
     });
   }
@@ -8310,6 +8319,18 @@ export class Workspace {
       bottom: TILE_MARGIN,
       left: TILE_MARGIN,
     });
+  }
+
+  /**
+   * A maximized tile fills the screen above the panel, edge to edge with no
+   * gaps, so maximize shows even on a lone tile (whose cell is the page).
+   */
+  private maximizedTiledRect(window: WaylandWindow): ManagedWindowRect {
+    const usable = COMPOSITOR.layer.usableArea(this.monitor);
+    if (usable) {
+      return { x: usable.x, y: usable.y, width: usable.width, height: usable.height };
+    }
+    return this.fullscreenRootRect(window);
   }
 
   private fullscreenRootRect(window: WaylandWindow): ManagedWindowRect {
