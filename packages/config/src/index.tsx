@@ -152,6 +152,41 @@ function isPlasmaShellWindow(window: WaylandWindow): boolean {
   return isPlasmaShellSurface(window.plasma.peek());
 }
 
+/**
+ * The last focus changes, shell window opens and closes, and pointer target
+ * changes, for `debug.focus`: a flicker on hover was focus flipping.
+ */
+const FOCUS_DEBUG_LIMIT = 200;
+const focusDebugEvents: Array<Record<string, unknown>> = [];
+function noteFocusDebug(event: Record<string, unknown>) {
+  focusDebugEvents.push({ t: Date.now(), ...event });
+  if (focusDebugEvents.length > FOCUS_DEBUG_LIMIT) {
+    focusDebugEvents.shift();
+  }
+}
+/** Who a window is, for `debug.focus`. */
+function focusDebugName(window: WaylandWindow) {
+  const plasma = window.plasma.peek();
+  return {
+    id: window.id,
+    app: window.appId.peek(),
+    role: plasma?.role,
+    shell: isPlasmaShellSurface(plasma),
+  };
+}
+
+/**
+ * plasmashell windows that have the keyboard now. The pointer leaves focus
+ * alone while any has it. One flag was not enough: when the panel lost focus
+ * just after Kickoff got it, the panel's "lost" turned the pause off, the
+ * pointer gave focus back to the window under it, and the menu closed and
+ * reopened on every hover.
+ */
+const FOCUSED_SHELL_WINDOWS = new Set<string>();
+function syncPointerFocusPause() {
+  HYBRID_WINDOW_MANAGER.setPointerFocusPaused(FOCUSED_SHELL_WINDOWS.size > 0);
+}
+
 /** plasmashell's open windows, by id (filled by the open and close events). */
 const PLASMA_SHELL_WINDOWS = new Map<string, WaylandWindow>();
 
@@ -589,6 +624,16 @@ WORKSPACE_IPC.handle("debug.slidingPopups", (params) => {
 WORKSPACE_IPC.handle("debug.wobble", () => ({ runs: jellyDragDebug() }));
 WORKSPACE_IPC.handle("debug.quality", () => qualityDebug());
 WORKSPACE_IPC.handle("debug.tabDrag", () => ({ events: tabDragDebug() }));
+WORKSPACE_IPC.handle("debug.focus", () => ({
+  events: focusDebugEvents,
+  focusedShellWindows: [...FOCUSED_SHELL_WINDOWS],
+  // The shell windows open now: a stuck tooltip or preview shows up here.
+  shellWindows: [...PLASMA_SHELL_WINDOWS.values()].map((window) => ({
+    ...focusDebugName(window),
+    rect: window.rect,
+    focused: window.isFocused.peek(),
+  })),
+}));
 // Runs what the title bar's maximize button runs, for tests with no pointer.
 WORKSPACE_IPC.handle("debug.maximizeButton", (params) => {
   const windowId = (params as { windowId?: string } | undefined)?.windowId;
@@ -1191,6 +1236,13 @@ COMPOSITOR.rendering.surfacePolicy = (surface) => {
 // below (see `isPlasmaShellWindow`).
 COMPOSITOR.event.onOpen((window) => {
   if (isPlasmaShellWindow(window)) {
+    noteFocusDebug({
+      kind: "shell-open",
+      ...focusDebugName(window),
+      x: window.plasma.peek()?.x,
+      y: window.plasma.peek()?.y,
+      takesFocus: plasmaShellWindowTakesFocus(window),
+    });
     PLASMA_SHELL_WINDOWS.set(window.id, window);
     if (plasmaShellWindowTakesFocus(window)) {
       window.focus();
@@ -1238,12 +1290,14 @@ COMPOSITOR.event.onStartClose((window) => {
 });
 
 COMPOSITOR.event.onClose((window) => {
+  if (isPlasmaShellWindow(window)) {
+    noteFocusDebug({ kind: "shell-close", ...focusDebugName(window) });
+  }
   PLASMA_SHELL_WINDOWS.delete(window.id);
   if (isPlasmaShellWindow(window)) {
     // A focused popup can close before it reports the focus loss.
-    if (window.isFocused.peek()) {
-      HYBRID_WINDOW_MANAGER.setPointerFocusPaused(false);
-    }
+    FOCUSED_SHELL_WINDOWS.delete(window.id);
+    syncPointerFocusPause();
     return;
   }
   HYBRID_WINDOW_MANAGER.onClose(window);
@@ -1253,10 +1307,16 @@ COMPOSITOR.event.onClose((window) => {
 });
 
 COMPOSITOR.event.onFocus((window, focused) => {
+  noteFocusDebug({ kind: "focus", focused, ...focusDebugName(window) });
   if (isPlasmaShellWindow(window)) {
     // plasmashell closes Kickoff when it loses focus. Do not let the
     // pointer move focus to a tiled window while a shell popup has it.
-    HYBRID_WINDOW_MANAGER.setPointerFocusPaused(focused);
+    if (focused) {
+      FOCUSED_SHELL_WINDOWS.add(window.id);
+    } else {
+      FOCUSED_SHELL_WINDOWS.delete(window.id);
+    }
+    syncPointerFocusPause();
     return;
   }
   HYBRID_WINDOW_MANAGER.onFocus(window, focused);
@@ -1266,7 +1326,23 @@ COMPOSITOR.event.onFocus((window, focused) => {
   }
 });
 
+let lastPointerTargetKey = "";
 COMPOSITOR.event.onPointerMove((event) => {
+  const targetKey =
+    event.target.kind === "window"
+      ? `window:${event.target.windowId}`
+      : event.target.kind === "layer"
+        ? `layer:${event.target.layerId}`
+        : "none";
+  if (targetKey !== lastPointerTargetKey) {
+    lastPointerTargetKey = targetKey;
+    noteFocusDebug({
+      kind: "pointer-target",
+      target: targetKey,
+      x: Math.round(event.position.x),
+      y: Math.round(event.position.y),
+    });
+  }
   HYBRID_WINDOW_MANAGER.onPointerMove(event);
 
   // Dock proximity: update only the monitor the pointer is currently on,
