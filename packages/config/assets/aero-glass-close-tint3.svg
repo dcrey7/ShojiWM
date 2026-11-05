@@ -2,9 +2,9 @@
 <defs>
 <clipPath id="shape"><path d="M0.5,-1.0 H47.5 V14.0 Q47.5,18.5 43.0,18.5 H0.5 Q0.5,18.5 0.5,18.5 Z"/></clipPath>
 <linearGradient id="body" x1="0" y1="0" x2="0" y2="1">
-<stop offset="0" stop-color="#fb9d8b"/><stop offset="0.25" stop-color="#ee6d56"/>
-<stop offset="0.5" stop-color="#ee6d56"/><stop offset="0.5" stop-color="#d42809"/>
-<stop offset="1" stop-color="#d42809"/></linearGradient>
+<stop offset="0" stop-color="#4a4f58"/><stop offset="0.25" stop-color="#33373f"/>
+<stop offset="0.5" stop-color="#33373f"/><stop offset="0.5" stop-color="#22252b"/>
+<stop offset="1" stop-color="#22252b"/></linearGradient>
 <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
 <stop offset="0" stop-color="#fff" stop-opacity="0.5"/>
 <stop offset="0.45" stop-color="#fff" stop-opacity="0.3"/>
@@ -14,12 +14,14 @@
 <radialGradient id="side" cx="0.5" cy="0.5" r="0.75">
 <stop offset="0.55" stop-color="#000" stop-opacity="0"/>
 <stop offset="1" stop-color="#000" stop-opacity="0.35"/></radialGradient>
-<radialGradient id="glow"><stop offset="0.2" stop-color="#f4e676"/><stop offset="1" stop-color="#f4e676" stop-opacity="0"/></radialGradient>
+<radialGradient id="glow"><stop offset="0.2" stop-color="#e0574c"/><stop offset="1" stop-color="#e0574c" stop-opacity="0"/></radialGradient>
 </defs>
 <g clip-path="url(#shape)">
 <rect width="48" height="19" fill="url(#body)"/>
 <rect width="48" height="19" fill="url(#side)"/>
-<ellipse cx="24.0" cy="25.650000000000002" rx="28.799999999999997" ry="15.200000000000001" fill="url(#glow)"/>
+<rect width="48" height="19" fill="#000" fill-opacity="0.000"/>
+<rect width="48" height="19" fill="#e0574c" fill-opacity="0.413"/>
+<g opacity="0.495"><ellipse cx="24.0" cy="25.650000000000002" rx="28.799999999999997" ry="15.200000000000001" fill="url(#glow)"/></g>
 <rect width="48" height="19" fill="url(#gloss)"/>
 <path d="M1.5,-1.0 H46.5 V14.0 Q46.5,17.5 43.0,17.5 H1.5 Q1.5,17.5 1.5,17.5 Z" fill="none" stroke="#ffffff80"/>
 </g>

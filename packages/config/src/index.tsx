@@ -17,6 +17,7 @@ import {
   type PlasmaSurfaceRole,
   type PlasmaSurfaceState,
   computed,
+  signal,
   useState,
   shaderStage,
   loadShader,
@@ -780,6 +781,18 @@ if (!INSIDE_KDE) {
     restart: "on-exit",
   });
 }
+// Reads the Global Theme the user picked and sends "theme.set" (see the
+// helper's header and `TITLEBAR_STYLE`).
+COMPOSITOR.process.service("theme-watch", {
+  command: [
+    "sh",
+    "-c",
+    'exec python3 "$HOME/.config/shojiwm/src/helpers/theme-watch.py" "$1"',
+    "theme-watch",
+    defaultSocketPath(),
+  ],
+  restart: "on-exit",
+});
 // Draws the Coverflow switcher's title (see the helper's header).
 COMPOSITOR.process.service("switcher-label", {
   command: [
@@ -1523,7 +1536,7 @@ COMPOSITOR.window.composition = (window: WaylandWindow) => {
   // (an animation runs, a switcher is open, or the GPU is too busy), a
   // see-through bar would show sharp text from behind, so it turns solid.
   const titlebarBackground = computed(() =>
-    TITLEBAR_STYLE === "aero"
+    TITLEBAR_STYLE() === "aero"
       ? GLASS_PAUSED()
         ? window.isFocused()
           ? "#14171df2"
@@ -1580,7 +1593,7 @@ COMPOSITOR.window.composition = (window: WaylandWindow) => {
     // Glass on every title bar, not only on the terminals: dark Aero glass
     // or macOS liquid glass (`TITLEBAR_STYLE`).
     pipeline:
-      TITLEBAR_STYLE === "aero"
+      TITLEBAR_STYLE() === "aero"
         ? [
             dualKawaseBlur({ radius: 6, passes: 2 }),
             shaderStage(loadShader("./src/effect/aero-glass.frag"), {
@@ -1635,7 +1648,7 @@ COMPOSITOR.window.composition = (window: WaylandWindow) => {
   // In the Window View only the hovered card shows them.
   const titlebarContent = !trafficLightsShown(window)
     ? [appIcon, label]
-    : TITLEBAR_STYLE === "aero"
+    : TITLEBAR_STYLE() === "aero"
       ? [appIcon, label, <AeroCaptionButtons window={window} />]
       : [appIcon, label, minimizeButton, maximizeButton, closeButton];
   // Apps like Konsole and Dolphin draw a see-through background and ask for
@@ -1784,12 +1797,29 @@ COMPOSITOR.window.composition = (window: WaylandWindow) => {
 };
 
 /**
- * The look of the title bar buttons:
- * - "aero": dark Windows 7 Aero glass, one joined glossy strip at the top
- *   right, coloured like traffic lights (see `AeroCaptionButtons`).
+ * The look of the title bars:
+ * - "aero": dark Windows 7 Aero glass, one joined strip of buttons at the
+ *   top right (see `AeroCaptionButtons`).
  * - "mac": macOS 27 glass traffic lights (see `TrafficLight`).
+ *
+ * The user picks it as a KDE Global Theme (or with the shoji-theme script);
+ * ./helpers/theme-watch.py reads the choice and sends "theme.set".
  */
-const TITLEBAR_STYLE: "aero" | "mac" = "aero";
+type TitlebarStyle = "aero" | "mac";
+const TITLEBAR_STYLE = signal<TitlebarStyle>("aero");
+WORKSPACE_IPC.handle("theme.set", (params) => {
+  const style = (params as { titlebar?: unknown } | undefined)?.titlebar;
+  if ((style === "aero" || style === "mac") && TITLEBAR_STYLE.peek() !== style) {
+    TITLEBAR_STYLE.value = style;
+  }
+});
+
+/**
+ * The Aero buttons' finish (see `assets/aero-buttons.py`): "glass" is
+ * Windows 7's gloss with a see-through colour tint on hover; "flat" is
+ * solid fills with a crisp border.
+ */
+const AERO_BUTTON_FINISH = "glass" as "flat" | "glass";
 
 // macOS-style traffic lights. Unfocused windows show grey lights, as on macOS.
 const TRAFFIC_LIGHT_SIZE = 14;
@@ -1828,7 +1858,7 @@ function titlebarButtonAt(window: WaylandWindow, x: number, y: number): Titlebar
   // From the right: close, maximize, minimize.
   const buttons: TitlebarButton[] = ["close", "maximize", "minimize"];
   const right = window.rect.width - WINDOW_BORDER_PX - TITLEBAR_PADDING_X;
-  if (TITLEBAR_STYLE === "aero") {
+  if (TITLEBAR_STYLE.peek() === "aero") {
     // The strip hangs from the top of the title bar; a little slack below
     // it for a scaled-down card.
     if (y > WINDOW_BORDER_PX + AERO_BUTTON_HEIGHT + 4) {
@@ -2043,11 +2073,11 @@ const MinimizeButton = ({ window }: { window: WaylandWindow }) => (
 );
 
 /**
- * Dark Aero caption buttons: Windows 7's joined glass strip at the top right
- * (minimize and maximize 29x19, close 48x19), coloured like traffic lights.
- * The SVGs come from `assets/aero-buttons.py`. Hover fades a brighter
- * button with a glow in over 0.1 s and out over 0.3 s, as on Windows 7;
- * pressing shows a darker one.
+ * Dark Aero caption buttons: Windows 7's joined strip at the top right
+ * (minimize and maximize 29x19, close 48x19). At rest they are dark and
+ * neutral; under the pointer they turn yellow, green or red, fading in over
+ * 0.1 s and out over 0.3 s, as on Windows 7. Pressed is a darker shade.
+ * The SVGs come from `assets/aero-buttons.py`.
  */
 const AERO_BUTTON_HEIGHT = 19;
 const AERO_BUTTON_WIDTH: Record<TitlebarButton, number> = {
@@ -2055,11 +2085,8 @@ const AERO_BUTTON_WIDTH: Record<TitlebarButton, number> = {
   maximize: 29,
   close: 48,
 };
-const AERO_GLOW_COLOR: Record<TitlebarButton, string> = {
-  minimize: "#f2c75c",
-  maximize: "#86d870",
-  close: "#e68e75",
-};
+/** The glass tint comes in this many drawn steps (`TINT_STEPS` in the generator). */
+const AERO_TINT_STEPS = 4;
 const AERO_GLOW_IN_MS = 100;
 const AERO_GLOW_OUT_MS = 300;
 const AERO_GLOW = {
@@ -2086,14 +2113,26 @@ const AeroButton = ({
   const size = { width, height: AERO_BUTTON_HEIGHT };
   const glow = AERO_GLOW[kind];
   const lit = computed(() => window.isFocused() || isWindowViewCard(window));
-  const body = computed(() =>
-    lit() && enabled()
-      ? `./assets/aero-${kind}-normal.svg`
-      : `./assets/aero-${kind}-inactive.svg`,
-  );
-  const highlight = computed(() =>
-    pressed() ? `./assets/aero-${kind}-press.svg` : `./assets/aero-${kind}-hover.svg`,
-  );
+  // ShojiWM draws an image at full strength, so the fade is not an opacity:
+  // the button steps through drawn tints, from faint to full (see
+  // `assets/aero-buttons.py`). Neutral at rest; the colour shows under the
+  // pointer; pressing shows a stronger one.
+  const asset = `./assets/aero-${AERO_BUTTON_FINISH}-${kind}`;
+  const tint = window.animation.variable(glow);
+  const body = computed(() => {
+    if (!lit() || !enabled()) {
+      return `${asset}-inactive.svg`;
+    }
+    if (pressed()) {
+      return `${asset}-press.svg`;
+    }
+    const level = tint();
+    if (AERO_BUTTON_FINISH === "flat") {
+      return level > 0.5 ? `${asset}-hover.svg` : `${asset}-rest.svg`;
+    }
+    const step = Math.ceil(level * AERO_TINT_STEPS - 0.01);
+    return step > 0 ? `${asset}-tint${step}.svg` : `${asset}-rest.svg`;
+  });
 
   const fade = (on: boolean) => {
     const show = on && enabled();
@@ -2107,17 +2146,6 @@ const AeroButton = ({
   return (
     <Box style={{ position: "relative", flexShrink: 0, ...size }}>
       <Image src={body} style={{ ...size, position: "absolute", pointerEvents: "none" }} />
-      <Box
-        style={{
-          ...size,
-          position: "absolute",
-          pointerEvents: "none",
-          opacity: window.animation.variable(glow),
-          boxShadow: [{ blur: 7, spread: 2, color: AERO_GLOW_COLOR[kind] }],
-        }}
-      >
-        <Image src={highlight} style={{ ...size, pointerEvents: "none" }} />
-      </Box>
       <Button
         onHoverChange={(value) => {
           if (!value) {
@@ -2130,14 +2158,12 @@ const AeroButton = ({
         onClick={onClick}
       />
       <Image
-        src={glyph}
-        style={{
-          ...size,
-          position: "absolute",
-          zIndex: 1,
-          pointerEvents: "none",
-          opacity: computed(() => (lit() && enabled() ? 1 : 0.6)),
-        }}
+        src={computed(() => {
+          const path = read(glyph);
+          // Unfocused or disabled: the dimmer glyph.
+          return lit() && enabled() ? path : path.replace(/\.svg$/, "-dim.svg");
+        })}
+        style={{ ...size, position: "absolute", zIndex: 1, pointerEvents: "none" }}
       />
     </Box>
   );
@@ -2150,7 +2176,7 @@ const AeroCaptionButtons = ({ window }: { window: WaylandWindow }) => (
       <AeroButton
         window={window}
         kind="minimize"
-        glyph="./assets/aero-glyph-minimize.svg"
+        glyph={`./assets/aero-${AERO_BUTTON_FINISH}-glyph-minimize.svg`}
         enabled={() => true}
         onClick={() => window.minimize()}
       />
@@ -2158,7 +2184,7 @@ const AeroCaptionButtons = ({ window }: { window: WaylandWindow }) => (
         window={window}
         kind="maximize"
         glyph={window.isMaximized((maximized) =>
-          maximized ? "./assets/aero-glyph-restore.svg" : "./assets/aero-glyph-maximize.svg",
+          maximized ? `./assets/aero-${AERO_BUTTON_FINISH}-glyph-restore.svg` : `./assets/aero-${AERO_BUTTON_FINISH}-glyph-maximize.svg`,
         )}
         enabled={() => read(window.isResizable)}
         onClick={() => {
@@ -2175,7 +2201,7 @@ const AeroCaptionButtons = ({ window }: { window: WaylandWindow }) => (
       <AeroButton
         window={window}
         kind="close"
-        glyph="./assets/aero-glyph-close.svg"
+        glyph={`./assets/aero-${AERO_BUTTON_FINISH}-glyph-close.svg`}
         enabled={() => true}
         onClick={window.close}
       />
