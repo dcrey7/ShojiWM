@@ -286,6 +286,23 @@ export function isChromeDialog(window: WaylandWindow): boolean {
   return role !== "browser" && !window.title.peek().startsWith("DevTools");
 }
 
+/**
+ * Tiled mode: a new window opens on a new workspace instead of this page.
+ * `hasRoom` is false when the page is full (rule 3) or a maximized tile
+ * keeps it for itself. A new window that opens maximized wants a page of
+ * its own too.
+ */
+export function opensOnNewPage(page: {
+  hasRoom: boolean;
+  tileCount: number;
+  newWindowMaximized: boolean;
+}): boolean {
+  if (page.tileCount === 0) {
+    return false;
+  }
+  return !page.hasRoom || page.newWindowMaximized;
+}
+
 /** The window can be a tile: resizable, not a child window, not a dialog. */
 export function isTileable(window: WaylandWindow): boolean {
   return (
@@ -1023,7 +1040,11 @@ export class HybridWindowManager {
       !restoringWorkspace &&
       workspace.mode === "tiled" &&
       workspace.shouldTile(window) &&
-      !this.canTakeNewTile(workspace)
+      opensOnNewPage({
+        hasRoom: this.canTakeNewTile(workspace),
+        tileCount: workspace.tiledWindows().length,
+        newWindowMaximized: window.isMaximized.peek(),
+      })
     ) {
       overflowWorkspace = this.insertEmptyWorkspaceAfter(
         workspace.monitor,
@@ -2656,9 +2677,15 @@ export class HybridWindowManager {
    * window holds it for itself (that page is full too).
    */
   private canTakeNewTile(workspace: Workspace): boolean {
+    // A lone tile that maximizes has no record (nothing moved away), so its
+    // maximized state counts too.
     const held = workspace
       .tiledWindows()
-      .some((window) => this.tiledMaximizeById.has(window.id));
+      .some(
+        (window) =>
+          this.tiledMaximizeById.has(window.id) ||
+          window.state[WINDOW_STATE_MAXIMIZED].peek(),
+      );
     return !held && workspace.canTileNewWindow();
   }
 
