@@ -61,7 +61,6 @@ import {
   WINDOW_STATE_WORKSPACE_OPACITY,
 } from "./window-manager";
 import { ISLAND_GLASS } from "./effect/island-glass";
-import { animationRunning } from "./animation-activity";
 import { qualityDebug, qualityLight } from "./quality";
 import { tabDragDebug } from "./window-manager";
 import { createCoverflow } from "./coverflow";
@@ -283,12 +282,13 @@ const SWITCHERS = {
   ),
 };
 
-// No glass while a switcher is open, or while a window animates (Magic
-// Lamp, wobbly drag): redoing the blur on every frame of an animation
-// drops frames when another program keeps the GPU busy. Also no glass when
-// the machine is too slow for it (quality.ts).
+// No glass while a switcher is open, or when the machine is too slow for it
+// (quality.ts). It does not pause for every animation: that swapped every
+// title bar between a plain box and the glass effect at the start and end of
+// each animation, a rebuild of every window on exactly the frames that must
+// be smooth. The quality guard turns the glass off if the GPU falls behind.
 const GLASS_PAUSED = computed(
-  () => SWITCHERS.blurSuspended() || animationRunning() || qualityLight(),
+  () => SWITCHERS.blurSuspended() || qualityLight(),
 );
 
 // Window backdrop effects end with this stage so they can fade back in after
@@ -1080,6 +1080,53 @@ COMPOSITOR.effect.background_effect = computed(() =>
   GLASS_PAUSED() ? null : BACKGROUND_BLUR,
 );
 
+// Glass behind the title bars and the terminals, compiled once and shared by
+// every window. Dark Aero glass or macOS liquid glass (`TITLEBAR_STYLE`).
+const liquidGlassStage = () =>
+  shaderStage(loadShader("./src/effect/liquid-glass.frag"), {
+    uniforms: {
+      // Follow the window's rounded corners.
+      glass_radius_px: -1.0,
+      distortion_depth: 0.2,
+      distortion_strength: 0.15,
+      chromatic_shift_px: 3.0,
+      glass_tint: 0.9,
+    },
+  });
+const TERMINAL_SHADER = compileEffect({
+  input: backdropSource(),
+  capturePadding: 24,
+  invalidate: { kind: "on-source-damage-box", damagePadding: 8 },
+  pipeline: [dualKawaseBlur({ radius: 4, passes: 2 }), liquidGlassStage(), backdropFade()],
+  alpha: "preserve",
+});
+const MAC_TITLE_SHADER = compileEffect({
+  input: backdropSource(),
+  capturePadding: 24,
+  invalidate: { kind: "on-source-damage-box", damagePadding: 8 },
+  alpha: "preserve",
+  pipeline: [dualKawaseBlur({ radius: 4, passes: 2 }), liquidGlassStage(), backdropFade()],
+});
+// Radius 4 like the other glass: under the dark tint, 6 looked the same and
+// cost more.
+const AERO_TITLE_SHADER = compileEffect({
+  input: backdropSource(),
+  capturePadding: 24,
+  invalidate: { kind: "on-source-damage-box", damagePadding: 8 },
+  alpha: "preserve",
+  pipeline: [
+    dualKawaseBlur({ radius: 4, passes: 2 }),
+    shaderStage(loadShader("./src/effect/aero-glass.frag"), {
+      uniforms: {
+        darkness: 0.62,
+        gloss_strength: 0.09,
+        streak_strength: 0.05,
+      },
+    }),
+    backdropFade(),
+  ],
+});
+
 const LAYER_BLUR_MASK = compileLayerEffect({
   input: backdropSource(),
   capturePadding: 24,
@@ -1686,10 +1733,10 @@ COMPOSITOR.window.composition = (window: WaylandWindow) => {
   // A soft drop shadow under the frame; the focused window floats a bit higher.
   // The window selected in the window switcher glows white instead (it fits
   // in the switcher's texture margin).
-  // No shadows while a window animates (the GPU time goes to the
-  // animation), or when the machine is too slow for them.
+  // No shadows when the machine is too slow for them. They stay on through
+  // animations: switching them re-sent every window at each start and end.
   const windowShadow = computed(() =>
-    animationRunning() || qualityLight()
+    qualityLight()
       ? []
       : SWITCHERS.selectedWindowId() === window.id
         ? [{ blur: 28, spread: 4, color: "#ffffffd0" }]
@@ -1729,61 +1776,8 @@ COMPOSITOR.window.composition = (window: WaylandWindow) => {
     background: titlebarBackground,
   };
 
-  const backgroundShader = compileEffect({
-    input: backdropSource(),
-    capturePadding: 24,
-    invalidate: { kind: "on-source-damage-box", damagePadding: 8 },
-    pipeline: [
-      dualKawaseBlur({ radius: 4, passes: 2 }),
-      shaderStage(loadShader("./src/effect/liquid-glass.frag"), {
-        uniforms: {
-          // Follow the window's rounded corners.
-          glass_radius_px: -1.0,
-          distortion_depth: 0.2,
-          distortion_strength: 0.15,
-          chromatic_shift_px: 3.0,
-          glass_tint: 0.9,
-        },
-      }),
-      backdropFade(),
-    ],
-    alpha: "preserve",
-  });
-
-  const titleOnlyShader = compileEffect({
-    input: backdropSource(),
-    capturePadding: 24,
-    invalidate: { kind: "on-source-damage-box", damagePadding: 8 },
-    alpha: "preserve",
-    // Glass on every title bar, not only on the terminals: dark Aero glass
-    // or macOS liquid glass (`TITLEBAR_STYLE`).
-    pipeline:
-      TITLEBAR_STYLE() === "aero"
-        ? [
-            dualKawaseBlur({ radius: 6, passes: 2 }),
-            shaderStage(loadShader("./src/effect/aero-glass.frag"), {
-              uniforms: {
-                darkness: 0.62,
-                gloss_strength: 0.09,
-                streak_strength: 0.05,
-              },
-            }),
-            backdropFade(),
-          ]
-        : [
-            dualKawaseBlur({ radius: 4, passes: 2 }),
-            shaderStage(loadShader("./src/effect/liquid-glass.frag"), {
-              uniforms: {
-                glass_radius_px: -1.0,
-                distortion_depth: 0.2,
-                distortion_strength: 0.15,
-                chromatic_shift_px: 3.0,
-                glass_tint: 0.9,
-              },
-            }),
-            backdropFade(),
-          ],
-  });
+  const titleOnlyShader =
+    TITLEBAR_STYLE() === "aero" ? AERO_TITLE_SHADER : MAC_TITLE_SHADER;
   // No backdrop effects while the window switcher shows the windows as
   // textures: there is nothing under a window there to blur.
   const blurSuspended = GLASS_PAUSED();
@@ -1865,7 +1859,7 @@ COMPOSITOR.window.composition = (window: WaylandWindow) => {
     innerComponents = blurSuspended ? (
       <Box direction="column">{terminalContent}</Box>
     ) : (
-      <ShaderEffect shader={backgroundShader} direction="column">
+      <ShaderEffect shader={TERMINAL_SHADER} direction="column">
         {terminalContent}
       </ShaderEffect>
     );
