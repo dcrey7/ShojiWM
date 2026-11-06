@@ -187,7 +187,7 @@ export const WINDOW_STATE_SNAP_MONITOR = createWindowState<string | null>(
   },
 );
 
-const OPEN_CLOSE_ANIMATION_DURATION = seconds(0.5);
+const OPEN_CLOSE_ANIMATION_DURATION = seconds(0.25);
 /** The close lamp's run plus a little slack, so the snapshot outlives it. */
 const CLOSE_LAMP_SLACK_MS = 120;
 /** A dragged-out Chrome tab is this share of the screen while it moves. */
@@ -209,7 +209,7 @@ const TAB_DRAG_SHRINK_FADE_EASING = cubicBezier(0.7, 0, 1, 0.6);
 /** The pointer of each dragged tab window's last move, for its shrink. */
 const lastTabDragPointer = new Map<string, { x: number; y: number }>();
 /** A dragged-out tab window grows out of its tab this fast, */
-const TAB_DRAG_GROW_MS = 280;
+const TAB_DRAG_GROW_MS = 200;
 /** ... easing out without a bounce, */
 const TAB_DRAG_GROW_EASING = cubicBezier(0.2, 0.8, 0.2, 1);
 /** ... fading in over the first part of it, */
@@ -313,24 +313,24 @@ export function isTileable(window: WaylandWindow): boolean {
   );
 }
 const INITIAL_TILEABILITY_SETTLE_DURATION = seconds(1);
-const WINDOW_MANAGEMENT_ANIMATION_DURATION = seconds(0.3);
+const WINDOW_MANAGEMENT_ANIMATION_DURATION = seconds(0.2);
 const UNMAXIMIZE_GRAB_ANIMATION_DURATION = 90;
 // See `lastRestoreAtMs`: a restore and an activate closer together than this
 // are one taskbar click, so the minimize-raise toggle must not fire.
 const RESTORE_ACTIVATE_GRACE_MS = 100;
 export const WINDOW_MANAGEMENT_EASING = cubicBezier(0.1, 0.9, 0.2, 1.0);
-const WINDOW_OPEN_EASING = cubicBezier(0.1, 1.1, 0.1, 1.1);
+const WINDOW_OPEN_EASING = cubicBezier(0.2, 0.8, 0.2, 1.0);
 /** How far (logical px) a tile's title bar must move before the drag starts. */
 const TILE_DRAG_THRESHOLD = 8;
 /** Offset between floating windows that would otherwise open on the same spot. */
 const FLOATING_CASCADE_STEP = 32;
 /** Tiles moving and resizing: short, so the in-between frames pass quickly. */
-export const TILE_ANIMATION_DURATION = seconds(0.3);
+export const TILE_ANIMATION_DURATION = seconds(0.2);
 /** How many past layouts a page keeps for windows that come back. */
 const LAYOUT_MEMORY_SIZE = 8;
 // A workspace switch slides like the tile strip scrolls: same duration and
 // easing (WINDOW_MANAGEMENT_EASING) as a tile move.
-const WORKSPACE_SWITCH_ANIMATION_DURATION = seconds(0.5);
+const WORKSPACE_SWITCH_ANIMATION_DURATION = seconds(0.3);
 /**
  * A full tiled page sends a new window to a new workspace. That slide is
  * short and crisp; the window opens (Magic Lamp) only after it.
@@ -352,7 +352,7 @@ const WORKSPACE_GESTURE_VELOCITY_THRESHOLD = 900;
 const WORKSPACE_KINETIC_SCROLL_MIN_VELOCITY = 120;
 const WORKSPACE_KINETIC_SCROLL_MAX_VELOCITY = 5000;
 const WORKSPACE_KINETIC_SCROLL_STOP_VELOCITY = 18;
-const WORKSPACE_KINETIC_SCROLL_TIME_CONSTANT_MS = 360;
+const WORKSPACE_KINETIC_SCROLL_TIME_CONSTANT_MS = 200;
 const WORKSPACE_KINETIC_SCROLL_FALLBACK_REFRESH_RATE = 120;
 const TILE_DRAG_WORKSPACE_EDGE_PX = 80;
 const TILE_DRAG_WORKSPACE_SWITCH_INTERVAL_MS = 420;
