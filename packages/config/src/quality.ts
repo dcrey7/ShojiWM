@@ -35,6 +35,15 @@ const RETRY_FIRST_MS = 2 * 60 * 1000;
 /** Each failed try doubles the wait, up to this. */
 const RETRY_MAX_MS = 30 * 60 * 1000;
 
+/**
+ * Steps of an animation's run the guard does not count: the start (0) and
+ * the first step, which carries the setup (the effect's first frame) and
+ * runs late on every run. The benchmark (6 Nov 2026) saw 8-11 ms there and
+ * 6.9 ms after; one late step in a 26-frame lamp is already 3.8%, so a single
+ * bad run turned the glass off.
+ */
+export const WARMUP_STEPS = 2;
+
 const [level, setLevel] = signal(QUALITY_FULL);
 const deltas: number[] = [];
 let retryAtMs: number | null = null;
@@ -121,4 +130,16 @@ export function recordAnimationFrame(deltaMs: number, nowMs: number = Date.now()
   triedLevel = null;
   changeLevel(level.peek() + 1, nowMs, lateShare);
   retryAtMs = nowMs + retryWaitMs;
+}
+
+/**
+ * Set the level by hand, for the animation benchmark: it measures each
+ * animation with the glass on (FULL) and off (LIGHT). The guard goes on
+ * from there as usual.
+ */
+export function setQualityLevel(next: number, nowMs: number = Date.now()) {
+  retryAtMs = null;
+  triedLevel = null;
+  retryWaitMs = RETRY_FIRST_MS;
+  changeLevel(Math.max(QUALITY_FULL, Math.min(QUALITY_MINIMAL, next)), nowMs, 0);
 }

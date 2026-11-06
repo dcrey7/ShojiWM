@@ -11,7 +11,12 @@ import {
   type WaylandWindow,
 } from "shoji_wm";
 import { setAnimationRunning } from "./animation-activity";
-import { qualityMinimal, recordAnimationFrame, retryQualityIfDue } from "./quality";
+import {
+  qualityMinimal,
+  recordAnimationFrame,
+  retryQualityIfDue,
+  WARMUP_STEPS,
+} from "./quality";
 import type {
   WindowEffectAssignment,
   WindowEffectHandle,
@@ -508,7 +513,9 @@ export function magicLampStart(
         const raw = lamp.lastMs === null ? 0 : handle.nowMs - lamp.lastMs;
         lamp.lastMs = handle.nowMs;
         lamp.run?.deltas.push(Math.round(raw * 10) / 10);
-        recordAnimationFrame(raw);
+        if ((lamp.run?.deltas.length ?? 0) > WARMUP_STEPS) {
+          recordAnimationFrame(raw);
+        }
         // A stalled frame (the shader's first compile, a busy main loop)
         // slows the lamp down instead of skipping it.
         const delta = Math.min(raw, MAX_FRAME_STEP_MS);

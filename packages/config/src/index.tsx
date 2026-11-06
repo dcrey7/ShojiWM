@@ -7,6 +7,8 @@ import {
   ShaderEffect,
   Label,
   COMPOSITOR,
+  createPoll,
+  type PollHandle,
   WindowBorder,
   backdropSource,
   compileEffect,
@@ -61,7 +63,7 @@ import {
   WINDOW_STATE_WORKSPACE_OPACITY,
 } from "./window-manager";
 import { ISLAND_GLASS } from "./effect/island-glass";
-import { qualityDebug, qualityLight } from "./quality";
+import { qualityDebug, qualityLight, setQualityLevel } from "./quality";
 import { tabDragDebug } from "./window-manager";
 import { createCoverflow } from "./coverflow";
 import { createFlip3D } from "./flip-3d";
@@ -984,6 +986,52 @@ WORKSPACE_IPC.handle("keys.list", () => ({ rows: KEYMAP_ROWS }));
 WORKSPACE_IPC.handle("debug.key", (params) => {
   const { keys } = (params ?? {}) as { keys?: string };
   return typeof keys === "string" && runChord(KEYMAP, keys);
+});
+
+// The animation benchmark (shojiwm-setup/bin/anim-bench). Between "start"
+// and "stop" a poll runs once per frame of the output and keeps the time
+// between presented frames. Nothing runs when no benchmark is on.
+let benchPoll: PollHandle | null = null;
+let benchFrames: number[] = [];
+WORKSPACE_IPC.handle("debug.bench", (params) => {
+  const { action, output, on, level } = (params ?? {}) as {
+    action?: "start" | "stop" | "profile" | "quality";
+    output?: string;
+    on?: boolean;
+    level?: number;
+  };
+  if (action === "start") {
+    benchPoll?.cancel();
+    benchFrames = [];
+    let lastMs: number | null = null;
+    benchPoll = createPoll(
+      1,
+      (handle) => {
+        if (lastMs !== null) {
+          benchFrames.push(Math.round((handle.nowMs - lastMs) * 100) / 100);
+        }
+        lastMs = handle.nowMs;
+      },
+      { output: output ?? "DP-2", dirty: "none" },
+    );
+    return { started: true };
+  }
+  if (action === "stop") {
+    benchPoll?.cancel();
+    benchPoll = null;
+    const frames = benchFrames;
+    benchFrames = [];
+    return { frames, quality: qualityDebug() };
+  }
+  if (action === "quality" && typeof level === "number") {
+    setQualityLevel(level);
+    return qualityDebug();
+  }
+  if (action === "profile") {
+    COMPOSITOR.debug.enableProfile(Boolean(on));
+    return { profile: COMPOSITOR.debug.profile };
+  }
+  return null;
 });
 
 COMPOSITOR.output.configure((context) => {

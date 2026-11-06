@@ -10,7 +10,12 @@ import {
   type WindowPosition,
 } from "shoji_wm";
 import { setAnimationRunning } from "./animation-activity";
-import { qualityMinimal, recordAnimationFrame, retryQualityIfDue } from "./quality";
+import {
+  qualityMinimal,
+  recordAnimationFrame,
+  retryQualityIfDue,
+  WARMUP_STEPS,
+} from "./quality";
 import type {
   ShaderUniformMap,
   WindowEffectAssignment,
@@ -371,7 +376,9 @@ function startPoll(wobble: Wobble) {
         wobble.lastMs === null ? 0 : Math.min(handle.nowMs - wobble.lastMs, 100);
       wobble.lastMs = handle.nowMs;
       run.deltas.push(Math.round(delta * 10) / 10);
-      recordAnimationFrame(delta);
+      if (run.deltas.length > WARMUP_STEPS) {
+        recordAnimationFrame(delta);
+      }
       if (!frame(wobble, delta)) {
         handle.cancel();
         wobble.poll = null;
