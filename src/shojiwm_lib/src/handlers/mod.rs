@@ -7,9 +7,9 @@ mod xwayland;
 // Wl Seat
 //
 
-use smithay::input::dnd::{DnDGrab, DndGrabHandler, GrabType, Source};
+use smithay::input::dnd::{DndGrabHandler, DndTarget, GrabType, Source};
 use smithay::input::keyboard::LedState;
-use smithay::input::pointer::{Focus, PointerHandle};
+use smithay::input::pointer::PointerHandle;
 use smithay::input::{Seat, SeatHandler, SeatState};
 use smithay::output::Output;
 use smithay::desktop::{PopupKind, WindowSurfaceType, find_popup_root_surface, layer_map_for_output};
@@ -247,33 +247,54 @@ impl SessionLockHandler for ShojiWM {
     }
 
     fn lock(&mut self, confirmation: SessionLocker) {
-        self.end_runtime_input_grab(Some("sessionLock"));
-        crate::backend::overlay::close_all("Session locked");
-        self.output_overlays.clear();
-        self.session_lock_active = true;
-        for targets in self.composition_targets.values_mut() {
-            targets.clear_presentation();
+        // Only one client holds the lock: a second locker would be able to
+        // unlock it again (ext-session-lock-v1 says to refuse it). Dropping
+        // `confirmation` answers `finished`. A locker that died leaves the
+        // session locked, and a new one may take over.
+        if self
+            .session_locker
+            .as_ref()
+            .is_some_and(|locker| locker.is_alive())
+        {
+            tracing::warn!("refused a session lock: another client holds the lock");
+            return;
         }
-        self.layer_shell_on_demand_focus = None;
-        // Park the focus owner rather than dropping it: `unlock` restores it.
-        // Taken directly instead of through
-        // `set_window_keyboard_focus_target_surface` so the lock is not
-        // recorded as a focus change in `previous_window_keyboard_focus_owner`.
-        self.session_lock_focus_owner = self.window_keyboard_focus_owner.take();
-        self.window_keyboard_focus = None;
-        if let Some(keyboard) = self.seat.get_keyboard() {
-            keyboard.set_focus(
-                self,
-                Option::<WlSurface>::None,
-                SERIAL_COUNTER.next_serial(),
-            );
+        // Already locked when a locker died, or when the session started
+        // locked: the session is hidden and focus parked already, and parking
+        // again would lose the owner `unlock` restores.
+        if !self.session_lock_active {
+            self.end_runtime_input_grab(Some("sessionLock"));
+            crate::backend::overlay::close_all("Session locked");
+            self.output_overlays.clear();
+            self.set_session_lock_active(true);
+            for targets in self.composition_targets.values_mut() {
+                targets.clear_presentation();
+            }
+            self.layer_shell_on_demand_focus = None;
+            // Park the focus owner rather than dropping it: `unlock` restores it.
+            // Taken directly instead of through
+            // `set_window_keyboard_focus_target_surface` so the lock is not
+            // recorded as a focus change in `previous_window_keyboard_focus_owner`.
+            self.session_lock_focus_owner = self.window_keyboard_focus_owner.take();
+            self.window_keyboard_focus = None;
+            if let Some(keyboard) = self.seat.get_keyboard() {
+                keyboard.set_focus(
+                    self,
+                    Option::<WlSurface>::None,
+                    SERIAL_COUNTER.next_serial(),
+                );
+            }
         }
+        self.session_lock_surfaces
+            .retain(|_, surface| surface.alive());
+        self.session_locker = Some(confirmation.ext_session_lock().clone());
         confirmation.lock();
         self.schedule_redraw();
     }
 
     fn unlock(&mut self) {
-        self.session_lock_active = false;
+        self.set_session_lock_active(false);
+        self.session_locker = None;
         self.session_lock_surfaces.clear();
         self.pointer_contents = crate::state::PointerContents::default();
         if let Some(keyboard) = self.seat.get_keyboard() {
@@ -309,6 +330,18 @@ impl SessionLockHandler for ShojiWM {
     }
 
     fn new_surface(&mut self, surface: LockSurface, output: WlOutput) {
+        // A client whose lock was refused can still create lock surfaces;
+        // they must not replace the lock screen of the client holding it.
+        let holder = self
+            .session_locker
+            .as_ref()
+            .and_then(|locker| locker.client());
+        if holder.is_none() || holder != surface.wl_surface().client() {
+            tracing::warn!(
+                "ignored a lock surface from a client that does not hold the session lock"
+            );
+            return;
+        }
         let Some(output) = self.output_for_lock_resource(&surface, &output) else {
             tracing::warn!("session lock surface could not be matched to an output");
             return;
@@ -523,10 +556,7 @@ impl crate::protocols::hyprland_toplevel_export::HyprlandToplevelExportHandler f
     ) -> Option<smithay::utils::Size<i32, smithay::utils::Buffer>> {
         use crate::wlr_foreign_toplevel::WlrForeignToplevelManagerHandler;
         let window = self.wlr_foreign_toplevel_window(handle)?;
-        crate::backend::image_copy_capture_render::compute_desired_buffer_size(
-            &self.space,
-            &window,
-        )
+        crate::backend::image_copy_capture_render::compute_desired_buffer_size(&self.space, &window)
     }
 
     fn hyprland_toplevel_export_queued(&mut self) {
@@ -1020,30 +1050,32 @@ impl DataDeviceHandler for ShojiWM {
     }
 }
 
-impl DndGrabHandler for ShojiWM {}
+impl DndGrabHandler for ShojiWM {
+    fn dropped(
+        &mut self,
+        _target: Option<DndTarget<'_, Self>>,
+        validated: bool,
+        _seat: Seat<Self>,
+        location: smithay::utils::Point<f64, Logical>,
+    ) {
+        self.queue_end_drag(crate::dnd::DragEndKind::Dropped, validated, location);
+    }
+
+    fn cancelled(&mut self, _seat: Seat<Self>, location: smithay::utils::Point<f64, Logical>) {
+        self.queue_end_drag(crate::dnd::DragEndKind::Cancelled, false, location);
+    }
+}
+
 impl WaylandDndGrabHandler for ShojiWM {
     fn dnd_requested<S: Source>(
         &mut self,
         source: S,
-        _icon: Option<WlSurface>,
+        icon: Option<WlSurface>,
         seat: Seat<Self>,
         serial: Serial,
         type_: GrabType,
     ) {
-        match type_ {
-            GrabType::Pointer => {
-                let ptr = seat.get_pointer().unwrap();
-                let start_data = ptr.grab_start_data().unwrap();
-
-                // create a dnd grab to start the operation
-                let grab = DnDGrab::new_pointer(&self.display_handle, start_data, source, seat);
-                ptr.set_grab(self, grab, serial, Focus::Keep);
-            }
-            GrabType::Touch => {
-                // smallvil lacks touch handling
-                source.cancel();
-            }
-        }
+        self.start_drag(source, icon, seat, serial, type_);
     }
 }
 
@@ -1136,7 +1168,9 @@ impl crate::protocols::color_management::ColorManagementHandler for ShojiWM {
         output
             .and_then(|output| self.output_color.get(output.name().as_str()))
             .filter(|color| matches!(color.mode, crate::color::OutputColorMode::Hdr10 { .. }))
-            .map_or(crate::color::ImageDescription::SRGB, |color| color.description)
+            .map_or(crate::color::ImageDescription::SRGB, |color| {
+                color.description
+            })
     }
 
     fn defer_image_description_info(
@@ -1150,10 +1184,7 @@ impl crate::protocols::color_management::ColorManagementHandler for ShojiWM {
         // write the object's data through a freed pointer; issue #1). If
         // the client is gone by the time this runs, the sends are no-ops.
         self.loop_handle.insert_idle(move |_state| {
-            crate::protocols::color_management::send_information(
-                &info,
-                &description,
-            );
+            crate::protocols::color_management::send_information(&info, &description);
         });
     }
 }

@@ -134,6 +134,11 @@ and floating per workspace:
 The default config also exposes the workspace layout over an IPC socket so an
 external bar (shoji-bar-3) can render workspace indicators and react to changes.
 
+Bars that speak ext-workspace see the workspaces that have windows plus the
+active one, and can activate them. They can also create a workspace by number:
+`create_workspace` with the name `5` lists workspace 5 (empty) until it is
+activated or gets a window, and activating it switches to it (`COMPOSITOR.workspace.event.onCreate`).
+
 ## Flip 3D
 
 `Super` + `Tab` opens a Windows Vista style window switcher
@@ -215,6 +220,14 @@ See [Input devices](./input.md) to change these.
 See [Effects](./effects.md) for how these are built, and
 [Blurring specific windows or layers](./effects.md#blurring-specific-windows-or-layers)
 for choosing which apps and bars get them.
+
+## Drag and drop
+
+While you drag text, files or links between windows, the dragged picture
+sits on a frosted card with a badge for what a drop would do (**+** copy,
+**→** move, **?** ask, **×** refused) and a label naming what is dragged. A
+drop nobody accepts flies back to where the drag started. See
+[Drag and drop](./drag-and-drop.md) to change it.
 
 ## Startup programs & environment
 

@@ -1,4 +1,6 @@
 /// <reference path="./runtime-globals.d.ts" />
+export { configureLockBackground, installSessionLockBridge } from "./session-lock";
+export type { LockBackgroundSelection } from "./session-lock";
 import type {
   CompositionRenderable,
   AppIconProps,
@@ -78,6 +80,8 @@ import type {
   WorkspaceConfigEntry,
   WorkspaceConfigureFactory,
   WorkspaceController,
+  WorkspaceCreateEvent,
+  WorkspaceMoveWindowEvent,
   WorkspaceGroupConfig,
   EnvController,
   EnvUpdateOperation,
@@ -211,8 +215,10 @@ import { INPUT_CONTROLLER, installInputDeviceChangeEmitter } from "./input";
 import { OUTPUT_CONTROLLER, installOutputChangeEmitter } from "./output";
 import { WORKSPACE_CONTROLLER } from "./workspace";
 import { DEBUG_CONTROLLER, takePendingDebugConfig } from "./debug";
+import { SESSION_CONTROLLER } from "./session";
 import { ENV_CONTROLLER, drainPendingEnvUpdates } from "./env";
 import { CURSOR_CONTROLLER, takePendingCursorConfig } from "./cursor";
+import { DND_CONTROLLER } from "./dnd";
 import {
   WINDOW_DECORATION_CONTROLLER,
   resolveWindowDecorationDecision,
@@ -429,13 +435,16 @@ export {
   commitWorkspaceConfigurationRegistration,
   emitWorkspaceActivate,
   takePendingWorkspaceConfig,
+  type WorkspaceConfigPayload,
 } from "./workspace";
 export { LAYER_CONTROLLER, updateLayerSnapshots } from "./layer";
 export {
   WINDOW_DECORATION_CONTROLLER,
+  resolveKdeDefaultDecorationMode,
   resolveWindowDecorationDecision,
 } from "./window-decoration";
 export { DEBUG_CONTROLLER, takePendingDebugConfig } from "./debug";
+export { SESSION_CONTROLLER, sessionStartLocked } from "./session";
 export { ENV_CONTROLLER, drainPendingEnvUpdates } from "./env";
 export {
   CURSOR_CONTROLLER,
@@ -463,6 +472,25 @@ export {
   takePendingInputConfig,
   updateInputState,
 } from "./input";
+export {
+  DND_CONTROLLER,
+  DragIcon,
+  dispatchDndEvent,
+  installDndWindowResolver,
+  type DndController,
+  type DndEvent,
+  type DndEventController,
+  type DragAction,
+  type DragActions,
+  type DragEnd,
+  type DragIconInfo,
+  type DragIconProps,
+  type DragPoint,
+  type DragSession,
+  type DragStartListener,
+  type DragView,
+  type DragViewOptions,
+} from "./dnd";
 export {
   dispatchInputGrabEvent,
   resetInputGrab,
@@ -710,6 +738,8 @@ export type {
   SurfacePolicyTarget,
   CompositorWindowController,
   CompositorWindowDecorationController,
+  KdeDefaultDecorationResolver,
+  WindowDecorationClient,
   WindowDecorationContext,
   WindowDecorationDecision,
   WindowDecorationMode,
@@ -758,6 +788,7 @@ export type {
   PointerRegionOptions,
   CursorPosition,
   CursorPositionTarget,
+  CursorKind,
   HotCorner,
   HotCornerOptions,
   InputAccelProfile,
@@ -929,17 +960,30 @@ export const Label = defineIntrinsicComponent<LabelProps>("Label");
  */
 export const Button = defineIntrinsicComponent<ButtonProps>("Button");
 
+const AppIconIntrinsic = defineIntrinsicComponent<AppIconProps>("AppIcon");
+
 /**
- * Renders a window's application icon. Pass `window.icon` for reactive updates.
+ * Renders a window's application icon. Pass `window.icon` for reactive updates,
+ * and `fallback` (a path relative to the config package root) for windows
+ * whose icon cannot be found.
  * ウィンドウのアプリケーションアイコンを描画します。
- * `window.icon` を渡すとリアクティブに更新されます。
+ * `window.icon` を渡すとリアクティブに更新されます。`fallback` には、
+ * アイコンが見つからないときに描く画像を設定パッケージルートからの相対パスで
+ * 渡します。
  *
  * @example
  * ```tsx
- * <AppIcon icon={window.icon} style={{ width: 16, height: 16 }} />
+ * <AppIcon icon={window.icon} fallback="assets/app.svg"
+ *   style={{ width: 16, height: 16 }} />
  * ```
  */
-export const AppIcon = defineIntrinsicComponent<AppIconProps>("AppIcon");
+export function AppIcon(props: AppIconProps) {
+  return AppIconIntrinsic(
+    props.fallback === undefined
+      ? props
+      : { ...props, fallback: resolveAssetPath(props.fallback) },
+  );
+}
 
 const ImageIntrinsic = defineIntrinsicComponent<ImageProps>("Image");
 
@@ -1133,8 +1177,10 @@ function createCompositorDefinition(): CompositorDefinition {
     process: PROCESS_CONTROLLER,
     key: KEY_BINDING_CONTROLLER,
     pointer: POINTER_CONTROLLER,
+    session: SESSION_CONTROLLER,
     input: INPUT_CONTROLLER,
     cursor: CURSOR_CONTROLLER,
+    dnd: DND_CONTROLLER,
     runtime: RUNTIME_CONTROLLER,
     window: WINDOW_CONTROLLER,
     layer: LAYER_CONTROLLER,
