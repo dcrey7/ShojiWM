@@ -914,8 +914,9 @@ if (INSIDE_KDE) {
 // fires Kickoff's own shortcut ("activate widget <id>") in kglobalaccel. If
 // plasmashell lost the shortcut (it does when it starts before kglobalaccel),
 // the script gives Kickoff its Alt+F1 back first.
+// The launcher on the panel: Kickoff (Mac look) or SevenStart (Aero look).
 const KICKOFF_ID_SCRIPT =
-  'panels().forEach(function (p) { p.widgets("org.kde.plasma.kickoff").forEach(function (w) { if (!w.globalShortcut) { w.globalShortcut = "Alt+F1"; } print(w.id + "\\n"); }); });';
+  'panels().forEach(function (p) { ["org.kde.plasma.kickoff", "io.gitgud.wackyideas.SevenStart"].forEach(function (plugin) { p.widgets(plugin).forEach(function (w) { if (!w.globalShortcut) { w.globalShortcut = "Alt+F1"; } print(w.id + "\\n"); }); }); });';
 function toggleLauncher() {
   COMPOSITOR.process.spawn({
     command: [
