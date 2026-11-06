@@ -652,6 +652,28 @@ WORKSPACE_IPC.handle("debug.maximizeButton", (params) => {
   return { before, after: read(window.isMaximized), resizable: read(window.isResizable) };
 });
 
+// Grows a traffic light like a hover does, for tests with no pointer.
+WORKSPACE_IPC.handle("debug.trafficLightGrow", (params) => {
+  const { windowId, kind, to, durationMs } = (params ?? {}) as {
+    windowId?: string;
+    kind?: keyof typeof TRAFFIC_LIGHT_GROW;
+    to?: number;
+    durationMs?: number;
+  };
+  const window =
+    typeof windowId === "string" ? HYBRID_WINDOW_MANAGER.findWindowById(windowId) : undefined;
+  const grow = TRAFFIC_LIGHT_GROW[kind ?? "close"];
+  if (!window || !grow) {
+    return null;
+  }
+  window.animation.start(grow, {
+    duration: Math.max(1, durationMs ?? TRAFFIC_LIGHT_GROW_MS),
+    to: to ?? TRAFFIC_LIGHT_HOVER_GROW,
+    easing: TRAFFIC_LIGHT_HOVER_EASING,
+  });
+  return { started: true };
+});
+
 WORKSPACE_IPC.handle("debug.magicLamp", (params) => ({
   runs: magicLampDebug(
     (params as { durationMs?: number | null } | undefined)?.durationMs,
