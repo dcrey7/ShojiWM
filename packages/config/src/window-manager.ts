@@ -305,6 +305,20 @@ export function opensOnNewPage(page: {
   return !page.hasRoom || page.newWindowMaximized;
 }
 
+/**
+ * Tiled mode, maximize of the page's left tile: the windows that leave for
+ * a new page next to it. The other tiles go, and the minimized tiles go
+ * with them: a minimized tile comes back to its own page, so left behind it
+ * would tile under the maximized window.
+ */
+export function windowsLeavingOnMaximize<T extends { id: string }>(
+  maximized: T,
+  tiles: readonly T[],
+  minimizedTiles: readonly T[],
+): T[] {
+  return [...tiles, ...minimizedTiles].filter((window) => window.id !== maximized.id);
+}
+
 /** The window can be a tile: resizable, not a child window, not a dialog. */
 export function isTileable(window: WaylandWindow): boolean {
   return (
@@ -2712,15 +2726,17 @@ export class HybridWindowManager {
       this.maximizeTiledToNextPage(workspace, window, tree, others);
       return;
     }
-    if (others.length > 0 && !this.tiledMaximizeById.has(window.id)) {
+    const leaving = windowsLeavingOnMaximize(window, others, workspace.minimizedTiles());
+    if (leaving.length > 0 && !this.tiledMaximizeById.has(window.id)) {
       const side = this.insertEmptyWorkspaceAfter(workspace.monitor, workspace.index);
-      for (const other of others) {
+      for (const other of leaving) {
         const moved = workspace.takeWindowForMove(other);
         if (moved) {
           side.addMovedWindow(other, moved.snapshot);
         }
       }
-      // They slide out to the right, where their workspace now is.
+      // They slide out to the right, where their workspace now is. The
+      // minimized ones just move: nothing of them shows.
       side.slideWindows(
         others,
         0,
@@ -2732,7 +2748,7 @@ export class HybridWindowManager {
       setTimeout(() => side.setVisible(side.isActive()), WORKSPACE_SWITCH_ANIMATION_DURATION);
       this.tiledMaximizeById.set(window.id, {
         tree,
-        otherIds: others.map((other) => other.id),
+        otherIds: leaving.map((other) => other.id),
       });
     }
     workspace.setTiledLayoutTree({ kind: "leaf", id: window.id });
@@ -2872,9 +2888,9 @@ export class HybridWindowManager {
     for (const source of sources) {
       source.applyLayout({ animate: false });
     }
-    // They slide in from the right, where they were.
+    // They slide in from the right, where they were (minimized ones just move).
     workspace.slideWindows(
-      back,
+      back.filter((other) => !other.state[WINDOW_STATE_MINIMIZED].peek()),
       this.workspaceTransitionDistance(workspace.monitor),
       0,
       WORKSPACE_SLIDE_MIN_OPACITY,

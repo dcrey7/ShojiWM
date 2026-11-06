@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { opensOnNewPage } from "../packages/config/src/window-manager.ts";
+import { opensOnNewPage, windowsLeavingOnMaximize } from "../packages/config/src/window-manager.ts";
 
 test("an empty page always takes the new window", () => {
   assert.equal(opensOnNewPage({ hasRoom: true, tileCount: 0, minimizedTileCount: 0, newWindowMaximized: true }), false);
@@ -45,4 +45,26 @@ test("a page with only minimized tiles takes a normal window", () => {
     }),
     false,
   );
+});
+
+test("a maximize sends the other tiles to the next page", () => {
+  const konsole = { id: "konsole" };
+  const dolphin = { id: "dolphin" };
+  assert.deepEqual(windowsLeavingOnMaximize(konsole, [konsole, dolphin], []), [dolphin]);
+});
+
+test("a maximize sends the minimized tiles along with the others", () => {
+  // 6 Nov: Konsole maximized on a page with Dolphin and a minimized Kate.
+  // Dolphin moved to the next page, Kate stayed. Restored, Kate tiled
+  // under the full-screen Konsole.
+  const konsole = { id: "konsole" };
+  const dolphin = { id: "dolphin" };
+  const kate = { id: "kate" };
+  assert.deepEqual(windowsLeavingOnMaximize(konsole, [konsole, dolphin], [kate]), [dolphin, kate]);
+});
+
+test("a lone tile that maximizes still sends a minimized tile away", () => {
+  const konsole = { id: "konsole" };
+  const kate = { id: "kate" };
+  assert.deepEqual(windowsLeavingOnMaximize(konsole, [konsole], [kate]), [kate]);
 });
