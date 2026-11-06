@@ -422,6 +422,11 @@ pub struct ComputedDecorationNode {
     /// Accumulated `transform` scale of this node and its ancestors. Rects
     /// are already transformed; painted lengths (border, radius) use this.
     pub(crate) transform_scale: (f64, f64),
+    /// Under a `transform`, the exact edges minus the snapped `resolved_rect`
+    /// edges (left, top, right, bottom), in physical pixels. A 16 px light
+    /// scaled to 1.1 is 17.6 px, but `resolved_rect` can only be 16 or 18;
+    /// images draw at the exact edges so the scale glides.
+    pub(crate) transform_subpixel: Option<[f64; 4]>,
     pub children: Vec<ComputedDecorationNode>,
 }
 
@@ -447,6 +452,33 @@ impl ResolvedDecorationClip {
 }
 
 impl ComputedDecorationNode {
+    /// The node's edges in physical pixels before snapping: with no
+    /// transform, the `resolved_rect` edges.
+    fn exact_edges(&self) -> [f64; 4] {
+        let rect = self.resolved_rect;
+        let [left, top, right, bottom] = self.transform_subpixel.unwrap_or([0.0; 4]);
+        [
+            rect.x.raw() as f64 + left,
+            rect.y.raw() as f64 + top,
+            rect.right().raw() as f64 + right,
+            rect.bottom().raw() as f64 + bottom,
+        ]
+    }
+
+    /// The logical rect at the exact transformed edges (see
+    /// `transform_subpixel`); with no transform, the snapped rect.
+    pub(crate) fn exact_precise_rect(&self) -> crate::backend::visual::PreciseLogicalRect {
+        let frame = self.frame;
+        let scale = sanitize_layout_scale(frame.scale);
+        let [left, top, right, bottom] = self.exact_edges();
+        crate::backend::visual::PreciseLogicalRect {
+            x: (frame.origin_x + left / scale) as f32,
+            y: (frame.origin_y + top / scale) as f32,
+            width: ((right - left) / scale) as f32,
+            height: ((bottom - top) / scale) as f32,
+        }
+    }
+
     pub fn window_slot_rect(&self) -> Option<LogicalRect> {
         if matches!(self.kind, DecorationNodeKind::WindowSlot) {
             return Some(self.rect);
@@ -2051,23 +2083,43 @@ impl ResolvedLogicalRect {
     /// is given in logical pixels; the transformed edges are snapped back onto
     /// the physical grid.
     fn transform_around(self, origin: (f64, f64), transform: NodeTransform, scale: f64) -> Self {
-        let scale = sanitize_layout_scale(scale);
-        let translate_x = transform.translate_x as f64 * scale;
-        let translate_y = transform.translate_y as f64 * scale;
-        let map_x = |value: ResolvedLayoutValue| {
-            origin.0 + (value.0 as f64 - origin.0) * transform.scale_x as f64 + translate_x
-        };
-        let map_y = |value: ResolvedLayoutValue| {
-            origin.1 + (value.0 as f64 - origin.1) * transform.scale_y as f64 + translate_y
-        };
-        let (left, right) = (map_x(self.x), map_x(self.right()));
-        let (top, bottom) = (map_y(self.y), map_y(self.bottom()));
-        let min_x = round_half_up(left.min(right));
-        let min_y = round_half_up(top.min(bottom));
-        let max_x = round_half_up(left.max(right));
-        let max_y = round_half_up(top.max(bottom));
+        let edges = [
+            self.x.0 as f64,
+            self.y.0 as f64,
+            self.right().0 as f64,
+            self.bottom().0 as f64,
+        ];
+        let [left, top, right, bottom] = map_edges(edges, origin, transform, scale);
+        let min_x = round_half_up(left);
+        let min_y = round_half_up(top);
+        let max_x = round_half_up(right);
+        let max_y = round_half_up(bottom);
         Self::from_px(min_x, min_y, max_x - min_x, max_y - min_y)
     }
+}
+
+/// Applies a node transform around `origin` to edges (left, top, right,
+/// bottom) in physical pixels, with no snapping. Translation is in logical
+/// pixels. A negative scale flips the edges, so the result is reordered.
+fn map_edges(
+    edges: [f64; 4],
+    origin: (f64, f64),
+    transform: NodeTransform,
+    scale: f64,
+) -> [f64; 4] {
+    let scale = sanitize_layout_scale(scale);
+    let translate_x = transform.translate_x as f64 * scale;
+    let translate_y = transform.translate_y as f64 * scale;
+    let map_x = |value: f64| origin.0 + (value - origin.0) * transform.scale_x as f64 + translate_x;
+    let map_y = |value: f64| origin.1 + (value - origin.1) * transform.scale_y as f64 + translate_y;
+    let (left, right) = (map_x(edges[0]), map_x(edges[2]));
+    let (top, bottom) = (map_y(edges[1]), map_y(edges[3]));
+    [
+        left.min(right),
+        top.min(bottom),
+        left.max(right),
+        bottom.max(top),
+    ]
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2220,6 +2272,7 @@ fn layout_node_resolved(
         resolved_effective_clip: effective_clip,
         frame,
         transform_scale: (1.0, 1.0),
+        transform_subpixel: None,
         children,
     };
 
@@ -2677,9 +2730,17 @@ fn transform_subtree(
     transform: NodeTransform,
 ) {
     let frame = node.frame;
+    let exact = map_edges(node.exact_edges(), origin, transform, frame.scale);
     node.resolved_rect = node
         .resolved_rect
         .transform_around(origin, transform, frame.scale);
+    let snapped = node.resolved_rect;
+    node.transform_subpixel = Some([
+        exact[0] - snapped.x.raw() as f64,
+        exact[1] - snapped.y.raw() as f64,
+        exact[2] - snapped.right().raw() as f64,
+        exact[3] - snapped.bottom().raw() as f64,
+    ]);
     node.rect = frame.logical_rect(node.resolved_rect);
     node.resolved_content_rect =
         node.resolved_content_rect
@@ -4617,6 +4678,64 @@ mod tests {
             layout.hit_test(LogicalPoint::new(0, 5)),
             DecorationHitTestResult::Action(WindowAction::Close)
         );
+    }
+
+    #[test]
+    fn transform_keeps_exact_edges_for_a_gliding_scale() {
+        // A 16 px light in a 16 px box scaled to 1.1, like a hovered traffic
+        // light: the snapped rect is 18 px, the exact rect 17.6 px.
+        let light = |scale: f32| {
+            let root = DecorationNode::new(DecorationNodeKind::Box(BoxNode::default()))
+                .with_children(vec![
+                    DecorationNode::new(DecorationNodeKind::Box(BoxNode::default()))
+                        .with_style(DecorationStyle {
+                            width: Some(16.0),
+                            height: Some(16.0),
+                            transform: Some(NodeTransform {
+                                translate_x: 0.0,
+                                translate_y: 0.0,
+                                scale_x: scale,
+                                scale_y: scale,
+                            }),
+                            ..Default::default()
+                        })
+                        .with_children(vec![
+                            DecorationNode::new(DecorationNodeKind::Box(BoxNode::default()))
+                                .with_style(DecorationStyle {
+                                    width: Some(16.0),
+                                    height: Some(16.0),
+                                    ..Default::default()
+                                }),
+                        ]),
+                    DecorationNode::new(DecorationNodeKind::WindowSlot),
+                ]);
+            let layout = DecorationTree::new(root)
+                .layout(LogicalRect::new(0, 0, 100, 40))
+                .expect("layout should succeed");
+            let image = &layout.root.children[0].children[0];
+            (image.rect, image.exact_precise_rect())
+        };
+
+        let (snapped, exact) = light(1.1);
+        assert_eq!(snapped, LogicalRect::new(-1, -1, 18, 18));
+        assert!((exact.x + 0.8).abs() < 1e-4, "{exact:?}");
+        assert!((exact.width - 17.6).abs() < 1e-4, "{exact:?}");
+        assert!((exact.height - 17.6).abs() < 1e-4, "{exact:?}");
+
+        // Every step of the grow gives a new exact width; the snapped one
+        // has only two.
+        let widths = (0..=10)
+            .map(|step| light(1.0 + step as f32 * 0.01).1.width)
+            .collect::<Vec<_>>();
+        assert!(
+            widths.windows(2).all(|pair| pair[1] > pair[0]),
+            "{widths:?}"
+        );
+
+        // No transform: the exact rect is the snapped rect.
+        let (snapped, exact) = light(1.0);
+        assert_eq!(snapped, LogicalRect::new(0, 0, 16, 16));
+        assert_eq!((exact.x, exact.width), (0.0, 16.0));
     }
 
     #[test]

@@ -22,7 +22,7 @@ use smithay::{
     },
     desktop::{Space, Window},
     output::Output,
-    utils::{Logical, Rectangle, Scale as OutputScale},
+    utils::{Logical, Physical, Point, Rectangle, Scale as OutputScale},
 };
 
 use crate::backend::async_assets::{AsyncAssetJob, AsyncAssetJobSender};
@@ -572,7 +572,16 @@ pub(crate) fn memory_icon_element(
         None,
         Kind::Unspecified,
     )?;
-    let element = crate::backend::clipped_memory::ExactMemoryElement::new(element, Some(physical));
+    let mut element =
+        crate::backend::clipped_memory::ExactMemoryElement::new(element, Some(physical));
+    // A scaled image (a traffic light growing on hover) has fractional edges:
+    // draw it there, or the size steps a whole pixel at a time.
+    let subpixel = icon
+        .rect_precise
+        .and_then(|rect| fractional_physical_rect(rect, root_rect, scale));
+    if let Some(rect) = subpixel {
+        element = element.with_subpixel_rect(rect);
+    }
     let clip_rect = icon.clip_rect.or_else(|| {
         icon.clip_rect_precise.map(|clip_rect| {
             LogicalRect::new(
@@ -630,11 +639,40 @@ pub(crate) fn memory_icon_element(
         Ok(Some(
             crate::backend::text::DecorationTextureElements::Clipped(clipped),
         ))
+    } else if subpixel.is_some() {
+        let faded =
+            crate::backend::clipped_memory::ClippedMemoryElement::unclipped(renderer, element)?;
+        Ok(Some(
+            crate::backend::text::DecorationTextureElements::Clipped(faded),
+        ))
     } else {
         Ok(Some(
             crate::backend::text::DecorationTextureElements::Memory(element),
         ))
     }
+}
+
+/// `rect` in root-local physical pixels, when an edge is off the pixel grid.
+fn fractional_physical_rect(
+    rect: PreciseLogicalRect,
+    root_rect: LogicalRect,
+    scale: OutputScale<f64>,
+) -> Option<Rectangle<f64, Physical>> {
+    let scale_x = scale.x.abs().max(0.0001);
+    let scale_y = scale.y.abs().max(0.0001);
+    let left = (rect.x as f64 - root_rect.x as f64) * scale_x;
+    let top = (rect.y as f64 - root_rect.y as f64) * scale_y;
+    let right = left + rect.width as f64 * scale_x;
+    let bottom = top + rect.height as f64 * scale_y;
+    // f32 logical coordinates carry ~1e-3 px of noise at desktop sizes.
+    let off_grid = |value: f64| (value - value.round()).abs() > 0.01;
+    if ![left, top, right, bottom].into_iter().any(off_grid) {
+        return None;
+    }
+    Some(Rectangle::new(
+        Point::from((left, top)),
+        (right - left, bottom - top).into(),
+    ))
 }
 
 fn icon_source_key(spec: &IconSpec) -> Option<String> {

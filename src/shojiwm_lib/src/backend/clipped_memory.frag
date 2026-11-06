@@ -18,6 +18,7 @@ uniform float render_scale;
 uniform float clip_enabled;
 uniform vec4 clip_rect;
 uniform vec4 clip_radius;
+uniform float edge_fade;
 
 varying vec2 v_coords;
 
@@ -48,6 +49,15 @@ void main() {
 #else
     color = color * alpha;
 #endif
+
+    // A buffer drawn at a fractional rect samples up to one texel past its
+    // edge. The texture clamps there and would smear the edge texel, so
+    // fade it out as a transparent border would under linear filtering.
+    if (edge_fade > 0.5) {
+        vec2 texel = v_coords * element_size;
+        vec2 fade = clamp(texel + 0.5, 0.0, 1.0) * clamp(element_size - texel + 0.5, 0.0, 1.0);
+        color *= fade.x * fade.y;
+    }
 
     if (clip_enabled > 0.5) {
         vec2 coords = v_coords * element_size;

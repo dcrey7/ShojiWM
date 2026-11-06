@@ -6691,6 +6691,7 @@ impl super::ComputedDecorationNode {
             resolved_effective_clip: self.resolved_effective_clip,
             frame: self.frame.translated(dx as f64, dy as f64),
             transform_scale: self.transform_scale,
+            transform_subpixel: self.transform_subpixel,
             children: self
                 .children
                 .iter()
@@ -7160,7 +7161,7 @@ fn collect_retargeted_icon_buffers(
         .and_then(|stable_id| node_geometry.node_geometry(stable_id));
     let rect_precise = shared_geometry
         .map(|geometry| geometry.rect_precise)
-        .unwrap_or_else(|| node.frame.precise_rect(node.resolved_rect));
+        .unwrap_or_else(|| image_rect_precise(node));
     let clip_rect_precise = shared_geometry
         .and_then(|geometry| geometry.clip_rect_precise)
         .or_else(|| {
@@ -8036,7 +8037,7 @@ fn collect_icon_buffers(
         rect_precise: Some(
             shared_geometry
                 .map(|geometry| geometry.rect_precise)
-                .unwrap_or_else(|| node.frame.precise_rect(node.resolved_rect)),
+                .unwrap_or_else(|| image_rect_precise(node)),
         ),
         icon: source.icon.cloned(),
         app_id: source.app_id.map(str::to_owned),
@@ -8056,7 +8057,7 @@ fn collect_icon_buffers(
         buffer.rect_precise = Some(
             shared_geometry
                 .map(|geometry| geometry.rect_precise)
-                .unwrap_or_else(|| node.frame.precise_rect(node.resolved_rect)),
+                .unwrap_or_else(|| image_rect_precise(node)),
         );
         buffer.clip_rect = node.effective_clip.map(|clip| clip.rect);
         buffer.clip_radius = node.effective_clip.map(|clip| clip.radius).unwrap_or(0);
@@ -8165,7 +8166,7 @@ impl NodeGeometry {
     fn for_node(node: &super::ComputedDecorationNode) -> Self {
         let frame = node.frame;
         Self {
-            rect_precise: frame.precise_rect(node.resolved_rect),
+            rect_precise: image_rect_precise(node),
             clip_rect_precise: node
                 .resolved_effective_clip
                 .map(|clip| frame.precise_rect(clip.rect)),
@@ -8182,6 +8183,20 @@ fn collect_node_geometry<'a>(
     }
     for child in &node.children {
         collect_node_geometry(child, insert);
+    }
+}
+
+/// A node's precise rect. Images and icons under a `transform` use the exact
+/// transformed edges, so a scale glides instead of stepping a whole pixel.
+/// Every other node keeps the snapped rect.
+fn image_rect_precise(node: &super::ComputedDecorationNode) -> PreciseLogicalRect {
+    if matches!(
+        node.kind,
+        super::DecorationNodeKind::AppIcon(_) | super::DecorationNodeKind::Image(_)
+    ) {
+        node.exact_precise_rect()
+    } else {
+        node.frame.precise_rect(node.resolved_rect)
     }
 }
 
