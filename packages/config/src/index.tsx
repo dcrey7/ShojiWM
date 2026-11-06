@@ -2176,8 +2176,8 @@ const TRAFFIC_LIGHT_BODIES = {
  * Like macOS 27, a light grows a little under the pointer and more while it
  * is pressed, then springs back. The values add to a scale of 1.
  */
-const TRAFFIC_LIGHT_HOVER_GROW = 0.1;
-const TRAFFIC_LIGHT_PRESS_GROW = 0.24;
+const TRAFFIC_LIGHT_HOVER_GROW = 0.2;
+const TRAFFIC_LIGHT_PRESS_GROW = 0.32;
 const TRAFFIC_LIGHT_GROW_MS = 200;
 /** The hover starts and stops softly (an ease-out jumps on its first frame). */
 const TRAFFIC_LIGHT_HOVER_EASING = cubicBezier(0.4, 0, 0.2, 1);
