@@ -64,6 +64,28 @@ use smithay::{backend::{allocator::dmabuf::Dmabuf, renderer::ImportDma}};
 
 use crate::state::ShojiWM;
 
+/// `cursor_image` may read the pointer's focus only for `Hidden` (see there):
+/// every other image can arrive while Smithay holds the pointer's lock.
+fn cursor_image_reads_pointer_focus(image: &smithay::input::pointer::CursorImageStatus) -> bool {
+    matches!(image, smithay::input::pointer::CursorImageStatus::Hidden)
+}
+
+#[cfg(test)]
+mod cursor_image_tests {
+    use super::cursor_image_reads_pointer_focus;
+    use smithay::input::pointer::{CursorIcon, CursorImageStatus};
+
+    #[test]
+    fn only_a_hidden_cursor_reads_the_pointer_focus() {
+        // Smithay passes the default image while it holds the pointer's
+        // lock (focus moved to another surface or to none); reading the focus
+        // then would wait on that lock forever.
+        assert!(!cursor_image_reads_pointer_focus(&CursorImageStatus::default_named()));
+        assert!(!cursor_image_reads_pointer_focus(&CursorImageStatus::Named(CursorIcon::Text)));
+        assert!(cursor_image_reads_pointer_focus(&CursorImageStatus::Hidden));
+    }
+}
+
 impl SeatHandler for ShojiWM {
     type KeyboardFocus = WlSurface;
     type PointerFocus = WlSurface;
@@ -99,14 +121,23 @@ impl SeatHandler for ShojiWM {
                 }
             });
         }
-        let focus = _seat.get_pointer().and_then(|pointer| pointer.current_focus());
-        let image = match image {
-            smithay::input::pointer::CursorImageStatus::Hidden
-                if self.keeps_cursor_visible_for_pointer_focus(focus.as_ref()) =>
-            {
-                smithay::input::pointer::CursorImageStatus::default_named()
-            }
-            image => image,
+        // Read the pointer focus only for `Hidden`. Smithay also calls this
+        // handler from inside `PointerHandle::motion` while it holds the
+        // pointer's lock (always with the default image, when focus moves to
+        // another surface or to none). Taking that lock again there, through
+        // `current_focus`, waits on itself forever: the compositor froze at
+        // login on 6 Nov 2026. `Hidden` only comes from a client's
+        // `wl_pointer.set_cursor(None)`, where no pointer lock is held.
+        let image = if cursor_image_reads_pointer_focus(&image)
+            && self.keeps_cursor_visible_for_pointer_focus(
+                _seat
+                    .get_pointer()
+                    .and_then(|pointer| pointer.current_focus())
+                    .as_ref(),
+            ) {
+            smithay::input::pointer::CursorImageStatus::default_named()
+        } else {
+            image
         };
         self.cursor_status = image;
         self.schedule_redraw();
