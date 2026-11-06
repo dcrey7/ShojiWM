@@ -775,6 +775,20 @@ const INSIDE_KDE =
     }
   ).Deno?.env.get("KDE_FULL_SESSION") === "true";
 
+/**
+ * The environment of the KDE services. The session says "ShojiWM"; KDE wants
+ * to know it runs KDE. XDG_MENU_PREFIX: Kickoff reads its app list from
+ * plasma-applications.menu. KDE_FULL_SESSION and KDE_SESSION_VERSION: KDE
+ * libraries only apply KDE behaviour (like panel-coloured tray icons) in a
+ * full KDE session.
+ */
+const KDE_SERVICE_ENV = {
+  XDG_CURRENT_DESKTOP: "KDE",
+  XDG_MENU_PREFIX: "plasma-",
+  KDE_FULL_SESSION: "true",
+  KDE_SESSION_VERSION: "6",
+};
+
 if (!INSIDE_KDE) {
   // KDE's shortcut service. In KDE, KWin gives it a Wayland backend; here it
   // runs on its X11 backend. plasmashell needs it to give Kickoff a
@@ -789,6 +803,11 @@ if (!INSIDE_KDE) {
       "XDG_SESSION_TYPE=x11",
       "/usr/lib/kglobalacceld",
     ],
+    // The same KDE environment as plasmashell. Both keep KDE's app database
+    // (~/.cache/ksycoca6_*). With a different menu prefix or desktop name,
+    // each found the other's copy wrong and rebuilt it, 20 times a second:
+    // plasmashell sat at 85% CPU and this service at 40%.
+    env: KDE_SERVICE_ENV,
     restart: "on-exit",
   });
   // The KDE desktop: your taskbar, start menu, icons, tray and wallpaper.
@@ -800,16 +819,7 @@ if (!INSIDE_KDE) {
       "-c",
       'for i in 1 2 3 4 5 6; do qdbus6 org.kde.kglobalaccel >/dev/null 2>&1 && break; sleep 0.5; done; exec plasmashell --no-respawn 2>>"$HOME/.local/state/plasmashell.log"',
     ],
-    // The session says "ShojiWM"; plasmashell wants to know it runs KDE.
-    // XDG_MENU_PREFIX: Kickoff reads its app list from plasma-applications.menu.
-    // KDE_FULL_SESSION and KDE_SESSION_VERSION: KDE libraries only apply
-    // KDE behaviour (like panel-coloured tray icons) in a full KDE session.
-    env: {
-      XDG_CURRENT_DESKTOP: "KDE",
-      XDG_MENU_PREFIX: "plasma-",
-      KDE_FULL_SESSION: "true",
-      KDE_SESSION_VERSION: "6",
-    },
+    env: KDE_SERVICE_ENV,
     restart: "on-exit",
   });
   // Owns KWin's Window View D-Bus name, so the taskbar shows a group's
