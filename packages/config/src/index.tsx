@@ -2256,9 +2256,7 @@ const TrafficLight = ({
         }}
         onClick={onClick}
       />
-      {enabled() ? (
-        // Always there, so a hover does not change the tree: the glyph fades
-        // in as the light grows, and is fully shown at the hover size.
+      {hover() && enabled() ? (
         <Image
           src={glyph}
           style={{
@@ -2267,8 +2265,6 @@ const TrafficLight = ({
             position: "absolute",
             zIndex: 1,
             pointerEvents: "none",
-            opacity: window.animation
-              .variable(grow)((value) => Math.min(1, Math.max(0, value / TRAFFIC_LIGHT_HOVER_GROW))),
           }}
         />
       ) : null}
