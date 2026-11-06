@@ -290,15 +290,17 @@ export function isChromeDialog(window: WaylandWindow): boolean {
  * Tiled mode: a new window opens on a new workspace instead of this page.
  * `hasRoom` is false when the page is full (rule 3) or a maximized tile
  * keeps it for itself. A new window that opens maximized wants a page of
- * its own too.
+ * its own too. A minimized tile still owns its page: it comes back to it,
+ * so a maximized newcomer would cover it.
  */
 export function opensOnNewPage(page: {
   hasRoom: boolean;
   tileCount: number;
+  minimizedTileCount: number;
   newWindowMaximized: boolean;
 }): boolean {
   if (page.tileCount === 0) {
-    return false;
+    return page.minimizedTileCount > 0 && page.newWindowMaximized;
   }
   return !page.hasRoom || page.newWindowMaximized;
 }
@@ -1043,6 +1045,7 @@ export class HybridWindowManager {
       opensOnNewPage({
         hasRoom: this.canTakeNewTile(workspace),
         tileCount: workspace.tiledWindows().length,
+        minimizedTileCount: workspace.minimizedTiles().length,
         newWindowMaximized: window.isMaximized.peek(),
       })
     ) {
@@ -5531,6 +5534,14 @@ export class Workspace {
   /** Tiled mode: the tiles of this workspace, in their order. */
   public tiledWindows(): WaylandWindow[] {
     return this.tileableWindows();
+  }
+
+  /** Tiled mode: the minimized windows that go back into a tile here. */
+  public minimizedTiles(): WaylandWindow[] {
+    return this.windows.filter(
+      (window) =>
+        this.shouldTile(window) && window.state[WINDOW_STATE_MINIMIZED].peek(),
+    );
   }
 
   /** Tiled mode: the layout, up to date with the windows. */
