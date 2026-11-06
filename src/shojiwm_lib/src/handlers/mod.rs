@@ -99,6 +99,15 @@ impl SeatHandler for ShojiWM {
                 }
             });
         }
+        let focus = _seat.get_pointer().and_then(|pointer| pointer.current_focus());
+        let image = match image {
+            smithay::input::pointer::CursorImageStatus::Hidden
+                if self.keeps_cursor_visible_for_pointer_focus(focus.as_ref()) =>
+            {
+                smithay::input::pointer::CursorImageStatus::default_named()
+            }
+            image => image,
+        };
         self.cursor_status = image;
         self.schedule_redraw();
     }

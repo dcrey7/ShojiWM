@@ -61,11 +61,18 @@ function normalizeConfig(config: CursorConfig): CursorConfig {
     );
   }
 
-  return { theme, size };
+  const keepVisibleFor = (config.keepVisibleFor ?? [])
+    .map((appId) => String(appId).trim())
+    .filter((appId) => appId.length > 0);
+  return { theme, size, keepVisibleFor };
 }
 
 function cloneConfig(config: CursorConfig): CursorConfig {
-  return { theme: config.theme, size: config.size };
+  return {
+    theme: config.theme,
+    size: config.size,
+    keepVisibleFor: [...(config.keepVisibleFor ?? [])],
+  };
 }
 
 function publishCursorEnvironment(config: CursorConfig): void {

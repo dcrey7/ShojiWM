@@ -662,6 +662,9 @@ pub struct ShojiWM {
     pub pending_pointer_input: Option<PendingPointerInput>,
     pub cursor_status: CursorImageStatus,
     pub cursor_override: Option<CursorIcon>,
+    /// App ids whose requests to hide the cursor are ignored
+    /// (`COMPOSITOR.cursor.configure({ keepVisibleFor })`).
+    pub cursor_keep_visible_for: std::collections::HashSet<String>,
     pub cursor_theme: Cursor,
     pub pointer_images: Vec<(Image, MemoryRenderBuffer)>,
     pub current_pointer_image: Option<Image>,
@@ -684,6 +687,22 @@ pub struct ShojiWM {
     /// get a single selected refresh value that follows the output where the X11 window is
     /// expected to run.
     pub xwayland_refresh_override_mhz: Arc<AtomicI32>,
+}
+
+/// A window's app id: the xdg toplevel's, or an X11 window's class.
+fn window_app_id(window: &Window) -> Option<String> {
+    if let Some(toplevel) = window.toplevel() {
+        return smithay::wayland::compositor::with_states(toplevel.wl_surface(), |states| {
+            states
+                .data_map
+                .get::<smithay::wayland::shell::xdg::XdgToplevelSurfaceData>()
+                .and_then(|data| data.lock().ok().and_then(|role| role.app_id.clone()))
+        });
+    }
+    window
+        .x11_surface()
+        .map(|x11| x11.class())
+        .filter(|class| !class.is_empty())
 }
 
 pub(crate) fn logical_rect_intersects_output(rect: LogicalRect, output_geo: Rectangle<i32, Logical>) -> bool {
@@ -1010,6 +1029,24 @@ impl ShojiWM {
                 .and_then(|x11| x11.wl_surface())
                 .as_ref()
                 == Some(root)
+    }
+
+    /// The app under the pointer asked to hide the cursor, but the config keeps
+    /// it visible for that app. Konsole hides it on every key press and 5 s
+    /// after the mouse stops (KDE's `KCursor` auto-hide), so the cursor
+    /// vanished during voice dictation.
+    pub(crate) fn keeps_cursor_visible_for_pointer_focus(&self, focus: Option<&WlSurface>) -> bool {
+        let Some(focus) = focus else {
+            return false;
+        };
+        if self.cursor_keep_visible_for.is_empty() {
+            return false;
+        }
+        self.space
+            .elements()
+            .find(|window| self.surface_belongs_to_window(window, focus))
+            .and_then(|window| window_app_id(window))
+            .is_some_and(|app_id| self.cursor_keep_visible_for.contains(&app_id))
     }
 
     pub fn surface_belongs_to_window(&self, window: &Window, surface: &WlSurface) -> bool {
@@ -1959,6 +1996,7 @@ impl ShojiWM {
             pending_pointer_input: None,
             cursor_status: CursorImageStatus::default_named(),
             cursor_override: None,
+            cursor_keep_visible_for: std::collections::HashSet::new(),
             cursor_theme: Cursor::load(),
             pointer_images: Vec::new(),
             current_pointer_image: None,
@@ -4022,6 +4060,7 @@ impl ShojiWM {
         &mut self,
         update: crate::cursor::RuntimeCursorConfigUpdate,
     ) {
+        self.cursor_keep_visible_for = update.keep_visible_for.iter().cloned().collect();
         if !self.cursor_theme.apply_runtime_config(update) {
             return;
         }

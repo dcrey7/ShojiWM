@@ -19,6 +19,10 @@ pub struct RuntimeCursorConfigUpdate {
     pub size: u32,
     #[serde(default)]
     pub reload: bool,
+    /// App ids whose requests to hide the cursor are ignored (see
+    /// `ShojiWM::keeps_cursor_visible_for_pointer_focus`).
+    #[serde(default)]
+    pub keep_visible_for: Vec<String>,
 }
 
 /// `COMPOSITOR.cursor.setPosition`: where to move the cursor.
@@ -208,6 +212,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn runtime_config_reads_keep_visible_for() {
+        let update: RuntimeCursorConfigUpdate = serde_json::from_str(
+            r#"{"theme":"breeze_cursors","size":24,"keepVisibleFor":["org.kde.konsole"]}"#,
+        )
+        .unwrap();
+        assert_eq!(update.keep_visible_for, vec!["org.kde.konsole".to_string()]);
+
+        let update: RuntimeCursorConfigUpdate =
+            serde_json::from_str(r#"{"theme":"breeze_cursors","size":24}"#).unwrap();
+        assert!(update.keep_visible_for.is_empty());
+    }
+
+    #[test]
     fn runtime_config_reloads_only_when_needed() {
         let mut cursor = Cursor::from_config("__shojiwm_test_missing_theme__".into(), 24);
 
@@ -215,16 +232,19 @@ mod tests {
             theme: "__shojiwm_test_missing_theme__".into(),
             size: 24,
             reload: false,
+            keep_visible_for: Vec::new(),
         }));
         assert!(cursor.apply_runtime_config(RuntimeCursorConfigUpdate {
             theme: "__shojiwm_test_missing_theme__".into(),
             size: 24,
             reload: true,
+            keep_visible_for: Vec::new(),
         }));
         assert!(cursor.apply_runtime_config(RuntimeCursorConfigUpdate {
             theme: "__shojiwm_test_missing_theme__".into(),
             size: 48,
             reload: false,
+            keep_visible_for: Vec::new(),
         }));
         assert_eq!(cursor.size(), 48);
     }
@@ -237,11 +257,13 @@ mod tests {
             theme: String::new(),
             size: 24,
             reload: true,
+            keep_visible_for: Vec::new(),
         }));
         assert!(!cursor.apply_runtime_config(RuntimeCursorConfigUpdate {
             theme: "default".into(),
             size: 513,
             reload: true,
+            keep_visible_for: Vec::new(),
         }));
         assert_eq!(cursor.size(), 24);
     }

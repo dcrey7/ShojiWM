@@ -2303,6 +2303,12 @@ export interface CursorConfig {
   theme: string;
   /** Cursor size in logical pixels. / 論理ピクセル単位のカーソルサイズ。 */
   size: number;
+  /**
+   * App ids whose requests to hide the cursor are ignored, e.g.
+   * `["org.kde.konsole"]`: Konsole hides it while you type and 5 s after the
+   * mouse stops. / カーソル非表示要求を無視するアプリ ID。
+   */
+  keepVisibleFor?: readonly string[];
 }
 
 /** @internal Wire payload sent to the compositor runtime. */

@@ -116,6 +116,9 @@ COMPOSITOR.env.publish();
 COMPOSITOR.cursor.configure({
   theme: "breeze_cursors", // KDE default cursor, like Abhishek's KDE
   size: 24,
+  // Konsole hides the cursor 5 s after the mouse stops, so it vanished
+  // during voice dictation. Keep it visible there.
+  keepVisibleFor: ["org.kde.konsole"],
 });
 
 COMPOSITOR.process.once("GTK-CSD-control-buttons", {
