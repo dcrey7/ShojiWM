@@ -2156,7 +2156,9 @@ const TRAFFIC_LIGHT_BODIES = {
  */
 const TRAFFIC_LIGHT_HOVER_GROW = 0.1;
 const TRAFFIC_LIGHT_PRESS_GROW = 0.24;
-const TRAFFIC_LIGHT_GROW_MS = 150;
+const TRAFFIC_LIGHT_GROW_MS = 200;
+/** The hover starts and stops softly (an ease-out jumps on its first frame). */
+const TRAFFIC_LIGHT_HOVER_EASING = cubicBezier(0.4, 0, 0.2, 1);
 const TRAFFIC_LIGHT_SPRING_MS = 220;
 /** Overshoots a little before it settles: the macOS 27 bounce. */
 const TRAFFIC_LIGHT_SPRING = cubicBezier(0.34, 1.56, 0.64, 1);
@@ -2212,7 +2214,7 @@ const TrafficLight = ({
     window.animation.start(grow, {
       duration: spring ? TRAFFIC_LIGHT_SPRING_MS : TRAFFIC_LIGHT_GROW_MS,
       to: target,
-      easing: spring ? TRAFFIC_LIGHT_SPRING : easeOut,
+      easing: spring ? TRAFFIC_LIGHT_SPRING : TRAFFIC_LIGHT_HOVER_EASING,
     });
   };
 
@@ -2254,7 +2256,9 @@ const TrafficLight = ({
         }}
         onClick={onClick}
       />
-      {hover() && enabled() ? (
+      {enabled() ? (
+        // Always there, so a hover does not change the tree: the glyph fades
+        // in as the light grows, and is fully shown at the hover size.
         <Image
           src={glyph}
           style={{
@@ -2263,6 +2267,8 @@ const TrafficLight = ({
             position: "absolute",
             zIndex: 1,
             pointerEvents: "none",
+            opacity: window.animation
+              .variable(grow)((value) => Math.min(1, Math.max(0, value / TRAFFIC_LIGHT_HOVER_GROW))),
           }}
         />
       ) : null}
