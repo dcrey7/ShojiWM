@@ -2199,18 +2199,18 @@ const TrafficLight = ({
         }}
         onClick={onClick}
       />
-      {hover() && enabled() ? (
-        <Image
-          src={glyph}
-          style={{
-            width: TRAFFIC_LIGHT_SIZE,
-            height: TRAFFIC_LIGHT_SIZE,
-            position: "absolute",
-            zIndex: 1,
-            pointerEvents: "none",
-          }}
-        />
-      ) : null}
+      {/* The glyph always shows. The node stays and only its image changes, so
+          the title bar keeps one shape (see "patch target is missing"). */}
+      <Image
+        src={computed(() => (enabled() ? read(glyph) : "./assets/mac-glass-blank.svg"))}
+        style={{
+          width: TRAFFIC_LIGHT_SIZE,
+          height: TRAFFIC_LIGHT_SIZE,
+          position: "absolute",
+          zIndex: 1,
+          pointerEvents: "none",
+        }}
+      />
     </Box>
   );
 };
