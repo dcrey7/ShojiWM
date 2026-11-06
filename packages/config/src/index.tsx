@@ -2199,26 +2199,18 @@ const TrafficLight = ({
         }}
         onClick={onClick}
       />
-      {/* The glyph always shows. The node stays and only its image changes, so
-          the title bar keeps one shape (see "patch target is missing"). */}
-      <Image
-        src={computed(() => {
-          if (!enabled()) {
-            return "./assets/mac-glass-blank.svg";
-          }
-          // A grey light (unfocused window) gets the grey glyph, like its body.
-          const lit = window.isFocused() || isWindowViewCard(window);
-          // A coloured light gets a white glyph.
-          return read(glyph).replace(/\.svg$/, lit ? "-white.svg" : "-grey.svg");
-        })}
-        style={{
-          width: TRAFFIC_LIGHT_SIZE,
-          height: TRAFFIC_LIGHT_SIZE,
-          position: "absolute",
-          zIndex: 1,
-          pointerEvents: "none",
-        }}
-      />
+      {hover() && enabled() ? (
+        <Image
+          src={glyph}
+          style={{
+            width: TRAFFIC_LIGHT_SIZE,
+            height: TRAFFIC_LIGHT_SIZE,
+            position: "absolute",
+            zIndex: 1,
+            pointerEvents: "none",
+          }}
+        />
+      ) : null}
     </Box>
   );
 };
