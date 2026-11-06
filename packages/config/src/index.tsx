@@ -2208,7 +2208,8 @@ const TrafficLight = ({
           }
           // A grey light (unfocused window) gets the grey glyph, like its body.
           const lit = window.isFocused() || isWindowViewCard(window);
-          return lit ? read(glyph) : read(glyph).replace(/\.svg$/, "-grey.svg");
+          // A coloured light gets a white glyph.
+          return read(glyph).replace(/\.svg$/, lit ? "-white.svg" : "-grey.svg");
         })}
         style={{
           width: TRAFFIC_LIGHT_SIZE,
