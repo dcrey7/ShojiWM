@@ -2092,7 +2092,7 @@ const TRAFFIC_LIGHT_BODIES = {
   close: "./assets/mac-glass-close.svg",
   minimize: "./assets/mac-glass-minimize.svg",
   maximize: "./assets/mac-glass-maximize.svg",
-  inactive: "./assets/mac-glass-inactive.svg",
+  inactive: "./assets/mac-glass-inactive-silver.svg",
 };
 
 /**
@@ -2203,12 +2203,9 @@ const TrafficLight = ({
           the title bar keeps one shape (see "patch target is missing"). */}
       <Image
         src={computed(() => {
-          if (!enabled()) {
-            return "./assets/mac-glass-blank.svg";
-          }
-          // A grey light (unfocused window) gets the grey glyph, like its body.
+          // A plain light (unfocused window, or a disabled button) shows no glyph.
           const lit = window.isFocused() || isWindowViewCard(window);
-          return lit ? read(glyph) : read(glyph).replace(/\.svg$/, "-grey.svg");
+          return lit && enabled() ? read(glyph) : "./assets/mac-glass-blank.svg";
         })}
         style={{
           width: TRAFFIC_LIGHT_SIZE,
