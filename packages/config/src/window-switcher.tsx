@@ -192,32 +192,7 @@ export interface SwitcherLayout<State> {
   readonly minimizedOpacity?: number;
   /** A window left `state.windows` (it closed): lay out the rest again. */
   windowsChanged?(state: State, controls: SwitcherControls): void;
-  /**
-   * How much of the white glass panel shows behind card `index` (0..1),
-   * before the opening and closing fade. `selected` is the selected card's
-   * index (`null`: none yet). Without it, no card has a panel. A change
-   * eases in over `PANEL_FADE_MS`, so the panel never pops.
-   */
-  panel?(state: State, index: number, selected: number | null): number;
 }
-
-/** The glass panel behind one card (see `WindowSwitcher.panels`). */
-export interface CardPanel {
-  /** 0 = none, 1 = full. */
-  strength: number;
-  /** The window's logical px per px on screen (the card is scaled). */
-  unit: number;
-}
-
-/**
- * The most a panel may reach past its window: the room `MARGIN` leaves in
- * the card's texture, less 2 px (logical px of the window).
- */
-const PANEL_ROOM = MARGIN - 2;
-/** A card's panel fading in or out (ms). */
-const PANEL_FADE_MS = 150;
-/** The panel's reach on screen (padding + 3 sigma of its shadow, see switcher-panel.frag). */
-const PANEL_REACH = 14 + 3 * 3 + 2;
 
 /** A title bar button. */
 export type TitlebarButton = "minimize" | "maximize" | "close";
@@ -241,8 +216,6 @@ export interface WindowSwitcher {
   readonly selectedWindowId: ReadonlySignal<string | null>;
   /** True from opening until the real desktop is back. */
   readonly isOpen: ReadonlySignal<boolean>;
-  /** The cards with a glass panel behind them, by window id. */
-  readonly panels: ReadonlySignal<ReadonlyMap<string, CardPanel>>;
   /**
    * Debug (tests over IPC): feed a pointer motion, or a press of `button`, at
    * a global point to the open switcher, as if the real pointer did it.
@@ -325,10 +298,8 @@ interface Session<State> {
   moveFrom: Map<string, Pose>;
   moveProgress: number;
   departing: DepartingCard[];
-  /** Each card's opacity factor (hidden while it pours into the taskbar). */
+  /** Each card's opacity factor (a minimized card is dimmed). */
   cardAlpha: Map<string, number>;
-  /** Each card's panel amount, easing towards the layout's `panel`. */
-  panelAmount: Map<string, number>;
   lamps: Map<string, LampCard>;
   /**
    * Opened for some windows only (the Window View): the other windows on
@@ -356,7 +327,6 @@ export function createWindowSwitcher<State>(
   const [backdropStrength, setBackdropStrength] = signal(1);
   const [selectedWindowId, setSelectedWindowId] = signal<string | null>(null);
   const [isOpen, setIsOpen] = signal(false);
-  const [panels, setPanels] = signal<ReadonlyMap<string, CardPanel>>(new Map());
   let blurFade: PollHandle | null = null;
 
   const touch = () => setRevision(revision.peek() + 1);
@@ -502,54 +472,6 @@ export function createWindowSwitcher<State>(
     return layout.dimAlpha * openness(session);
   }
 
-  /**
-   * Each card's glass panel for this frame: the layout's amount, eased
-   * over `PANEL_FADE_MS` and faded with the opening and closing. Sends
-   * nothing when no panel changed. True while a panel still eases.
-   */
-  function updatePanels(session: Session<State>, dtMs: number): boolean {
-    const viewport = viewportOf(session.output);
-    if (!layout.panel || !viewport) {
-      return false;
-    }
-    const fade = openness(session);
-    const selected = session.hasSelection ? mod(session.selected, session.windows.length) : null;
-    const step = dtMs / PANEL_FADE_MS;
-    let moving = false;
-    const next = new Map<string, CardPanel>();
-    for (const [index, { window, pose }] of poses(session, viewport).entries()) {
-      // A card pouring into the taskbar drops its panel at once: the lamp
-      // draws the window, and the panel must not pour with it.
-      const pouring = session.lamps.has(window.id);
-      const target = pouring ? 0 : layout.panel(session.state, index, selected);
-      const was = pouring ? 0 : (session.panelAmount.get(window.id) ?? 0);
-      const amount = was < target ? Math.min(target, was + step) : Math.max(target, was - step);
-      session.panelAmount.set(window.id, amount);
-      moving ||= amount !== target;
-      const strength = amount * fade;
-      if (strength > 0.001) {
-        // The panel keeps its size on screen, but stays inside the texture.
-        const unit = Math.min(1 / Math.max(pose.scale, 0.01), PANEL_ROOM / PANEL_REACH);
-        next.set(window.id, { strength, unit });
-      }
-    }
-    const old = panels.peek();
-    const same =
-      old.size === next.size &&
-      [...next].every(([id, panel]) => {
-        const was = old.get(id);
-        return (
-          was !== undefined &&
-          Math.abs(was.strength - panel.strength) < 0.002 &&
-          Math.abs(was.unit - panel.unit) < 0.002
-        );
-      });
-    if (!same) {
-      setPanels(next);
-    }
-    return moving;
-  }
-
   function ensureTicking(session: Session<State>) {
     if (session.poll) {
       return;
@@ -603,9 +525,6 @@ export function createWindowSwitcher<State>(
     if (session.phase === "leaving" && readyToHandOff(session)) {
       finish(session);
       return;
-    }
-    if (updatePanels(session, dt)) {
-      moving = true;
     }
     touch();
     if (session.phase === "shown" && !moving) {
@@ -696,7 +615,6 @@ export function createWindowSwitcher<State>(
       moveProgress: 1,
       departing: [],
       cardAlpha: new Map(),
-      panelAmount: new Map(),
       lamps: new Map(),
       others: [],
       subset: only !== undefined,
@@ -1005,9 +923,6 @@ export function createWindowSwitcher<State>(
     setBlurSuspended(false);
     setCurrent(null);
     setSelectedWindowId(null);
-    if (panels.peek().size > 0) {
-      setPanels(new Map());
-    }
     let fadeStartMs: number | null = null;
     blurFade = createPoll(
       1,
@@ -1253,7 +1168,6 @@ export function createWindowSwitcher<State>(
     backdropStrength,
     selectedWindowId,
     isOpen,
-    panels,
     debugPointer: (x, y, button) => {
       const session = current.peek();
       const handlers = session?.handlers;

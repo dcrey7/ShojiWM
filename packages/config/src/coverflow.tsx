@@ -2,9 +2,8 @@
  * Coverflow: a port of the GNOME extension "Coverflow Alt-Tab"
  * (github.com/dsheeler/CoverflowAltTab, src/coverflowSwitcher.js) as a
  * `SwitcherLayout` (see `./window-switcher.tsx` for what every switcher
- * shares: the opening and closing, the dimmed backdrop). The selected
- * window sits on a white glass panel (`panel`, drawn by
- * `./effect/switcher-panel.frag`).
+ * shares: the opening and closing, the dimmed backdrop, the white glow
+ * around the selected window).
  *
  * The selected window faces you in the centre. The windows before it turn
  * 90° and stack to the left, the windows after it stack to the right, each
@@ -352,18 +351,6 @@ const COVERFLOW_LAYOUT: SwitcherLayout<CoverflowState> = {
       return { ...from, opacity: from.opacity * (1 - t / SWAP_AT) };
     }
     return { ...to, opacity: to.opacity * ((t - SWAP_AT) / (1 - SWAP_AT)) };
-  },
-
-  // The front card sits on a white glass panel (Windows 7's thumbnail
-  // card). It shows as the card turns to face you and fades as it turns
-  // away, so it moves with the card and never pops in.
-  panel(state, index) {
-    const card = state.cards[index];
-    if (!card) {
-      return 0;
-    }
-    const facing = Math.max(0, 1 - Math.abs(valueAt(card.angle, state.nowMs)) / WINDOW_ANGLE);
-    return facing * facing;
   },
 
   onScroll(state, event, controls) {

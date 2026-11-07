@@ -152,9 +152,6 @@ const WINDOW_GRID_LAYOUT: SwitcherLayout<GridState> = {
   // card at full opacity, like KWin (a see-through card showed the desktop
   // through the window, so no card is dimmed).
   cardActions: true,
-  // The selected (hovered) card sits on the white glass panel, like
-  // Coverflow's front card. It fades from card to card as the selection moves.
-  panel: (_state, index, selected) => (index === selected ? 1 : 0),
   windowsChanged: (state) => {
     state.cellsKey = "";
   },
