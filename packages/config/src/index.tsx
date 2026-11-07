@@ -35,7 +35,6 @@ import {
   cubicBezier,
   easeOut,
   linear,
-  paintShader,
 } from "shoji_wm";
 import type {
   CompositionRenderable,
@@ -71,7 +70,7 @@ import { createFlip3D } from "./flip-3d";
 import { broadcastSwitcherLabel } from "./switcher-label";
 import { createWindowGrid, createWindowView } from "./window-grid";
 import { bindKeymap, createKeymap, keymapRows, runChord, writeKeymapFile } from "./keymap";
-import { MARGIN as SWITCHER_MARGIN, type TitlebarButton } from "./window-switcher";
+import type { TitlebarButton } from "./window-switcher";
 import {
   jellyDragDebug,
   jellyDragEffect,
@@ -1812,18 +1811,14 @@ COMPOSITOR.window.composition = (window: WaylandWindow) => {
     focused ? "#FFFFFF73" : "#FFFFFF14",
   );
   // A soft drop shadow under the frame; the focused window floats a bit higher.
-  // The window selected in the grid or the Window View glows white instead
-  // (it fits in the switcher's texture margin). Alt+Tab's Coverflow puts
-  // its front card on a glass panel (`switcherPanel`) instead of the glow.
+  // The window selected in the window switcher glows white instead (it fits
+  // in the switcher's texture margin).
   // No shadows when the machine is too slow for them. They stay on through
   // animations: switching them re-sent every window at each start and end.
-  // Most of the way onto Coverflow's glass panel, the card drops its own
-  // shadow: the panel draws one around itself.
-  const onPanel = computed(() => (WINDOW_SWITCHER.panels().get(window.id)?.strength ?? 0) > 0.5);
   const windowShadow = computed(() =>
-    qualityLight() || onPanel()
+    qualityLight()
       ? []
-      : glowsSelected(window)
+      : SWITCHERS.selectedWindowId() === window.id
         ? [{ blur: 28, spread: 4, color: "#ffffffd0" }]
         : window.isFocused()
           ? [{ y: 10, blur: 32, spread: -2, color: "#00000090" }]
@@ -1993,7 +1988,6 @@ COMPOSITOR.window.composition = (window: WaylandWindow) => {
         interactive={inactive((value) => !value)}
       >
         <WindowBorder
-          paint={switcherPanel(window)}
           style={{
             border: { px: WINDOW_BORDER_PX, color: borderColor },
             borderRadius: 10,
@@ -2030,7 +2024,6 @@ COMPOSITOR.window.composition = (window: WaylandWindow) => {
       interactive={inactive((value) => !value)}
     >
       <WindowBorder
-        paint={switcherPanel(window)}
         style={{
           border: { px: WINDOW_BORDER_PX, color: borderColor },
           borderRadius: 10,
@@ -2110,32 +2103,6 @@ const TRAFFIC_LIGHT_GAP = 10;
 /** The title bar's padding left and right, and the space between its items. */
 const TITLEBAR_PADDING_X = 8;
 const TITLEBAR_GAP = 8;
-
-/**
- * The window glows white: the selected card of a switcher, unless Alt+Tab
- * is Coverflow, which draws a glass panel instead (`switcherPanel`).
- */
-const glowsSelected = (window: WaylandWindow) =>
-  SWITCHERS.selectedWindowId() === window.id &&
-  !(WINDOW_SWITCHER_STYLE === "coverflow" && WINDOW_SWITCHER.selectedWindowId() === window.id);
-
-/**
- * The Windows 7 thumbnail card behind Coverflow's front window: a white
- * glass panel, drawn around the window border (./effect/switcher-panel.frag).
- * The switcher drives its strength every frame, so it fades and moves with
- * the card. At strength 0 the shader draws only the built-in border.
- */
-function switcherPanel(window: WaylandWindow) {
-  const panel = computed(() => WINDOW_SWITCHER.panels().get(window.id));
-  return paintShader("./src/effect/switcher-panel.frag", {
-    uniforms: {
-      strength: computed(() => panel()?.strength ?? 0),
-      unit: computed(() => panel()?.unit ?? 1),
-    },
-    // The card's texture holds this much room around the window.
-    outsets: SWITCHER_MARGIN,
-  });
-}
 
 /** The window is the hovered card of the Window View or the grid, or Alt+Tab's selected card. */
 const isWindowViewCard = (window: WaylandWindow) =>

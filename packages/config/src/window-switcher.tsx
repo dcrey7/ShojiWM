@@ -192,28 +192,7 @@ export interface SwitcherLayout<State> {
   readonly minimizedOpacity?: number;
   /** A window left `state.windows` (it closed): lay out the rest again. */
   windowsChanged?(state: State, controls: SwitcherControls): void;
-  /**
-   * How much of the white glass panel shows behind card `index` (0..1),
-   * before the opening and closing fade. Without it, no card has a panel.
-   */
-  panel?(state: State, index: number): number;
 }
-
-/** The glass panel behind one card (see `WindowSwitcher.panels`). */
-export interface CardPanel {
-  /** 0 = none, 1 = full. */
-  strength: number;
-  /** The window's logical px per px on screen (the card is scaled). */
-  unit: number;
-}
-
-/**
- * The most a panel may reach past its window: the room `MARGIN` leaves in
- * the card's texture, less 2 px (logical px of the window).
- */
-const PANEL_ROOM = MARGIN - 2;
-/** The panel's reach on screen (padding + 3 sigma of its shadow, see switcher-panel.frag). */
-const PANEL_REACH = 14 + 3 * 3 + 2;
 
 /** A title bar button. */
 export type TitlebarButton = "minimize" | "maximize" | "close";
@@ -237,8 +216,6 @@ export interface WindowSwitcher {
   readonly selectedWindowId: ReadonlySignal<string | null>;
   /** True from opening until the real desktop is back. */
   readonly isOpen: ReadonlySignal<boolean>;
-  /** The cards with a glass panel behind them, by window id. */
-  readonly panels: ReadonlySignal<ReadonlyMap<string, CardPanel>>;
   /**
    * Debug (tests over IPC): feed a pointer motion, or a press of `button`, at
    * a global point to the open switcher, as if the real pointer did it.
@@ -350,7 +327,6 @@ export function createWindowSwitcher<State>(
   const [backdropStrength, setBackdropStrength] = signal(1);
   const [selectedWindowId, setSelectedWindowId] = signal<string | null>(null);
   const [isOpen, setIsOpen] = signal(false);
-  const [panels, setPanels] = signal<ReadonlyMap<string, CardPanel>>(new Map());
   let blurFade: PollHandle | null = null;
 
   const touch = () => setRevision(revision.peek() + 1);
@@ -496,41 +472,6 @@ export function createWindowSwitcher<State>(
     return layout.dimAlpha * openness(session);
   }
 
-  /**
-   * Each card's glass panel for this frame: the layout's amount, faded
-   * with the opening and closing. Sends nothing when no panel changed.
-   */
-  function updatePanels(session: Session<State>) {
-    const viewport = viewportOf(session.output);
-    if (!layout.panel || !viewport) {
-      return;
-    }
-    const fade = openness(session);
-    const next = new Map<string, CardPanel>();
-    for (const [index, { window, pose }] of poses(session, viewport).entries()) {
-      const strength = layout.panel(session.state, index) * fade;
-      if (strength > 0.001) {
-        // The panel keeps its size on screen, but stays inside the texture.
-        const unit = Math.min(1 / Math.max(pose.scale, 0.01), PANEL_ROOM / PANEL_REACH);
-        next.set(window.id, { strength, unit });
-      }
-    }
-    const old = panels.peek();
-    const same =
-      old.size === next.size &&
-      [...next].every(([id, panel]) => {
-        const was = old.get(id);
-        return (
-          was !== undefined &&
-          Math.abs(was.strength - panel.strength) < 0.002 &&
-          Math.abs(was.unit - panel.unit) < 0.002
-        );
-      });
-    if (!same) {
-      setPanels(next);
-    }
-  }
-
   function ensureTicking(session: Session<State>) {
     if (session.poll) {
       return;
@@ -585,7 +526,6 @@ export function createWindowSwitcher<State>(
       finish(session);
       return;
     }
-    updatePanels(session);
     touch();
     if (session.phase === "shown" && !moving) {
       stopTicking(session);
@@ -983,9 +923,6 @@ export function createWindowSwitcher<State>(
     setBlurSuspended(false);
     setCurrent(null);
     setSelectedWindowId(null);
-    if (panels.peek().size > 0) {
-      setPanels(new Map());
-    }
     let fadeStartMs: number | null = null;
     blurFade = createPoll(
       1,
@@ -1231,7 +1168,6 @@ export function createWindowSwitcher<State>(
     backdropStrength,
     selectedWindowId,
     isOpen,
-    panels,
     debugPointer: (x, y, button) => {
       const session = current.peek();
       const handlers = session?.handlers;
