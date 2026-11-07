@@ -2206,11 +2206,14 @@ const TRAFFIC_LIGHT_BODIES = {
 };
 
 /**
- * Like macOS 27, a light grows a little under the pointer and more while it
- * is pressed, then springs back. The values add to a scale of 1.
+ * A light grows under the pointer. A press pushes it in like the start orb:
+ * down to 90% at once, held at least TRAFFIC_LIGHT_PRESS_HOLD_MS, then it
+ * springs back up. The values add to a scale of 1.
  */
 const TRAFFIC_LIGHT_HOVER_GROW = 0.2;
-const TRAFFIC_LIGHT_PRESS_GROW = 0.32;
+const TRAFFIC_LIGHT_PRESS_GROW = -0.1;
+const TRAFFIC_LIGHT_PRESS_MS = 60;
+const TRAFFIC_LIGHT_PRESS_HOLD_MS = 100;
 const TRAFFIC_LIGHT_GROW_MS = 200;
 /** The hover starts and stops softly (an ease-out jumps on its first frame). */
 const TRAFFIC_LIGHT_HOVER_EASING = cubicBezier(0.4, 0, 0.2, 1);
@@ -2254,18 +2257,21 @@ const TrafficLight = ({
   const [hover, setHover] = useState(false);
   const [pressed, setPressed] = useState(false);
   const grow = TRAFFIC_LIGHT_GROW[kind];
+  let pressedAt = 0;
 
   const animateGrow = () => {
-    const isPressed = read(pressed);
-    const target = !enabled()
-      ? 0
-      : isPressed
-        ? TRAFFIC_LIGHT_PRESS_GROW
-        : read(hover)
-          ? TRAFFIC_LIGHT_HOVER_GROW
-          : 0;
-    // The press and its release spring; a plain hover eases.
-    const spring = isPressed || window.animation.variable(grow).peek() > TRAFFIC_LIGHT_HOVER_GROW;
+    if (read(pressed) && enabled()) {
+      // Pushed in.
+      window.animation.start(grow, {
+        duration: TRAFFIC_LIGHT_PRESS_MS,
+        to: TRAFFIC_LIGHT_PRESS_GROW,
+        easing: TRAFFIC_LIGHT_HOVER_EASING,
+      });
+      return;
+    }
+    const target = enabled() && read(hover) ? TRAFFIC_LIGHT_HOVER_GROW : 0;
+    // Coming back up from a press springs; a plain hover eases.
+    const spring = window.animation.variable(grow).peek() < 0;
     window.animation.start(grow, {
       duration: spring ? TRAFFIC_LIGHT_SPRING_MS : TRAFFIC_LIGHT_GROW_MS,
       to: target,
@@ -2302,7 +2308,18 @@ const TrafficLight = ({
         }}
         onActiveChange={(value) => {
           setPressed(value);
-          animateGrow();
+          if (value) {
+            pressedAt = Date.now();
+            animateGrow();
+            return;
+          }
+          // A quick click still shows the press before it springs back.
+          const wait = TRAFFIC_LIGHT_PRESS_HOLD_MS - (Date.now() - pressedAt);
+          if (wait > 0) {
+            setTimeout(animateGrow, wait);
+          } else {
+            animateGrow();
+          }
         }}
         style={{
           width: TRAFFIC_LIGHT_SIZE,
