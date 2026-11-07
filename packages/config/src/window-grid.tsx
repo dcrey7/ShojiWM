@@ -67,7 +67,7 @@ export function createWindowGrid(options: WindowSwitcherOptions): WindowSwitcher
  * key picks a window, and a click on empty space or `Escape` closes it.
  *
  * The hovered card shows its title bar buttons: minimize pours the card into
- * the taskbar (the card stays, dimmed; a click restores it), maximize
+ * the taskbar (the card stays; a click restores it), maximize
  * maximizes the window and switches to it, close closes it (the other cards
  * make room; the view closes with the last one). A middle click closes the
  * window too, as in KWin.
@@ -149,9 +149,9 @@ const WINDOW_GRID_LAYOUT: SwitcherLayout<GridState> = {
   onClickOutside: (_state, controls) => controls.cancel(),
 
   // The hovered card's title bar buttons work; a minimized window stays as a
-  // dimmed card (KWin shows it at full opacity; dimmed by request).
+  // card at full opacity, like KWin (a see-through card showed the desktop
+  // through the window, so no card is dimmed).
   cardActions: true,
-  minimizedOpacity: 0.5,
   windowsChanged: (state) => {
     state.cellsKey = "";
   },

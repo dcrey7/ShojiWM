@@ -1936,8 +1936,12 @@ COMPOSITOR.window.composition = (window: WaylandWindow) => {
       </Box>,
       <ClientWindow />,
     ];
+    // No blur: the same flat backdrop as other see-through apps, so a
+    // switcher card never shows the desktop through the terminal.
     innerComponents = blurSuspended ? (
-      <Box direction="column">{terminalContent}</Box>
+      <Box direction="column" style={{ background: WINDOW_SOLID_BACKDROP }}>
+        {terminalContent}
+      </Box>
     ) : (
       <ShaderEffect shader={TERMINAL_SHADER} direction="column">
         {terminalContent}
