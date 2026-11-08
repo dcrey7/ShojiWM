@@ -76,6 +76,7 @@ import {
   PILL_HEIGHT,
   POWER_Y,
   ROW,
+  ROW_HEIGHT,
   SEARCH,
   SEARCH_FONT,
   SEARCH_ICON,
@@ -321,6 +322,8 @@ export function createLauncher(options: LauncherOptions): Launcher {
   const [hovered, setHovered] = signal<Target | null>(null);
   const [scroll, setScroll] = signal(0);
   const [caretOn, setCaretOn] = signal(true);
+  /** Debug: the backdrop blur can be switched off to measure its cost. */
+  const [glassOn, setGlassOn] = signal(true);
   const [context, setContext] = signal<{ x: number; y: number; app: LauncherApp; pinned: boolean } | null>(null);
 
   let grab: InputGrab | null = null;
@@ -393,22 +396,32 @@ export function createLauncher(options: LauncherOptions): Launcher {
     entry: Entry;
     index: number;
   }
-  const byKind = (source: ReadonlySignal<Layout>) =>
+  /**
+   * The entries by kind. With `scrolled`, only those inside the scroll area:
+   * the results draw just what shows, so a few slots cover any list and
+   * typing patches few nodes.
+   */
+  const byKind = (source: ReadonlySignal<Layout>, scrolled: boolean) =>
     computed(() => {
       const tiles: Placed[] = [];
       const rows: Placed[] = [];
       const pills: Placed[] = [];
+      const offset = scrolled ? scroll() : 0;
       source().entries.forEach((entry, index) => {
+        if (scrolled && (entry.y - offset >= BODY.height || entry.y + entry.height - offset <= 0)) {
+          return;
+        }
         (entry.kind === "tile" ? tiles : entry.kind === "row" ? rows : pills).push({ entry, index });
       });
       return { tiles, rows, pills };
     });
-  const homeSlots = byKind(homeLayout);
-  const resultSlots = byKind(resultsLayout);
+  const homeSlots = byKind(homeLayout, false);
+  const resultSlots = byKind(resultsLayout, true);
 
   const HOME_TILES = 40;
   const BOTTOM = bottomEntries();
-  const RESULT_ROWS = 20;
+  /** Rows that fit in the scroll area at once, with a part row at each end. */
+  const RESULT_ROWS = Math.ceil(BODY.height / ROW_HEIGHT) + 2;
   const RESULT_PILLS = 2;
   const HEADERS = 8;
   const NOTES = 2;
@@ -1138,11 +1151,15 @@ export function createLauncher(options: LauncherOptions): Launcher {
       hold?: string;
       ms?: number;
       dry?: boolean;
+      glass?: boolean;
       results?: unknown;
       state?: boolean;
     };
     if (raw.dry !== undefined) {
       dryRun = raw.dry;
+    }
+    if (raw.glass !== undefined) {
+      setGlassOn(raw.glass);
     }
     if (raw.open === true) {
       open();
@@ -1262,6 +1279,18 @@ export function createLauncher(options: LauncherOptions): Launcher {
    * Draw only what is inside the scroll area (a clip nested in the body's
    * clip does not intersect it, so the body alone cannot hide them).
    */
+  /**
+   * Extra room for the body clip. The engine clips an image by its box before
+   * the scale, and a 2x icon's box sticks out of its row. When the list is at
+   * its top (or bottom) nothing is hidden there, so the clip can grow.
+   */
+  const CLIP_ROOM = px(20);
+  const clipRoom = computed(() => {
+    const atTop = !typing() || scroll() <= 0;
+    const atBottom = !typing() || scroll() >= resultsLayout().height - BODY.height;
+    return { top: atTop ? CLIP_ROOM : 0, bottom: atBottom ? CLIP_ROOM : 0 };
+  });
+
   const inView = (entry: Entry | undefined, home: boolean) => {
     if (!entry) {
       return false;
@@ -1380,7 +1409,8 @@ export function createLauncher(options: LauncherOptions): Launcher {
 
   /** The kind label on the right ("App   Enter", "File"): a fixed column. */
   const KIND_WIDTH = px(150);
-  const SUB_PARTS = 5;
+  /** A subtitle: plain, highlighted, plain (one highlight, as in the mock). */
+  const SUB_PARTS = 3;
   /**
    * A result row (a pill with a title, or a title over a subtitle), or the
    * big pill of the top hit or the math answer. Title and subtitle sit at
@@ -1400,7 +1430,7 @@ export function createLauncher(options: LauncherOptions): Launcher {
     const parts = computed(() => {
       const value = item();
       const ranges = entry()?.section === "meaning" ? value?.highlight : undefined;
-      return value?.sub ? splitHighlights(value.sub, ranges) : [];
+      return value?.sub ? splitHighlights(value.sub, ranges, 1) : [];
     });
     const iconLeft = 1 + look.padLeft;
     const textLeft = iconLeft + look.icon + look.gap;
@@ -1531,6 +1561,7 @@ export function createLauncher(options: LauncherOptions): Launcher {
             height,
             alignItems: "center",
           }}
+          direction="row"
         >
           <Box style={{ flexGrow: 1 }} />
           <Label
@@ -1762,7 +1793,7 @@ export function createLauncher(options: LauncherOptions): Launcher {
     if (host.peek()?.id !== window.id) {
       queueMicrotask(() => setHost(window));
     }
-    const glass = options.glass();
+    const glass = options.glass() && glassOn();
     return (
       <ManagedWindow
         rect={managedRect}
@@ -1794,9 +1825,20 @@ export function createLauncher(options: LauncherOptions): Launcher {
             }}
           />
           <Search />
-          <Box style={{ position: "absolute", left: BODY.x, top: BODY.y, width: BODY.width, height: BODY.height, overflow: "hidden" }}>
-            <HomePage />
-            <ResultsPage />
+          <Box
+            style={{
+              position: "absolute",
+              left: BODY.x,
+              top: clipRoom((room) => BODY.y - room.top),
+              width: BODY.width,
+              height: clipRoom((room) => BODY.height + room.top + room.bottom),
+              overflow: "hidden",
+            }}
+          >
+            <Box style={{ position: "absolute", left: 0, top: clipRoom((room) => room.top), width: BODY.width, height: BODY.height }}>
+              <HomePage />
+              <ResultsPage />
+            </Box>
           </Box>
           <PowerRow />
           <ContextPill />
