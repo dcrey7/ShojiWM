@@ -628,7 +628,14 @@ WORKSPACE_IPC.handle("debug.slidingPopups", (params) => {
 });
 
 WORKSPACE_IPC.handle("debug.wobble", () => ({ runs: jellyDragDebug() }));
-WORKSPACE_IPC.handle("debug.quality", () => qualityDebug());
+// `level` forces a quality level, to test how light mode looks.
+WORKSPACE_IPC.handle("debug.quality", (params) => {
+  const { level } = (params ?? {}) as { level?: number };
+  if (typeof level === "number") {
+    setQualityLevel(level);
+  }
+  return qualityDebug();
+});
 WORKSPACE_IPC.handle("debug.tabDrag", () => ({ events: tabDragDebug() }));
 WORKSPACE_IPC.handle("debug.focus", () => ({
   events: focusDebugEvents,
@@ -1871,11 +1878,13 @@ COMPOSITOR.window.composition = (window: WaylandWindow) => {
   // in the switcher's texture margin).
   // No shadows when the machine is too slow for them. They stay on through
   // animations: switching them re-sent every window at each start and end.
+  // The switcher's selected card keeps its white glow even then: it is one
+  // window, and without it Coverflow and the group view lose their focus.
   const windowShadow = computed(() =>
-    qualityLight()
-      ? []
-      : SWITCHERS.selectedWindowId() === window.id
-        ? [{ blur: 28, spread: 4, color: "#ffffffd0" }]
+    SWITCHERS.selectedWindowId() === window.id
+      ? [{ blur: 28, spread: 4, color: "#ffffffd0" }]
+      : qualityLight()
+        ? []
         : window.isFocused()
           ? [{ y: 10, blur: 32, spread: -2, color: "#00000090" }]
           : [{ y: 4, blur: 16, spread: -2, color: "#00000060" }],
