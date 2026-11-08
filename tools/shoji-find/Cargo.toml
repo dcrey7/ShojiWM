@@ -1,0 +1,25 @@
+[package]
+name = "shoji-find"
+version = "0.1.0"
+edition = "2021"
+description = "The search helper of the ShojiWM launcher: apps, files, settings, maths and web, answered from RAM."
+license = "MIT"
+
+# Not a member of the ShojiWM workspace: this empty table makes the crate its
+# own workspace root, so the engine build never sees it.
+[workspace]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+nucleo-matcher = "0.3"
+memchr = "2"
+inotify = { version = "0.11", default-features = false }
+libc = "0.2"
+# Links the system libsqlite3: no C build, a fast compile.
+rusqlite = "0.37"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 4
