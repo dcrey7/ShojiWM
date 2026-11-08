@@ -90,6 +90,7 @@ import {
   slidePopupOut,
   slidingPopupsDebug,
 } from "./sliding-popups";
+import { createLauncher } from "./launcher";
 
 COMPOSITOR.env.apply({
   QT_QPA_PLATFORM: "wayland;xcb",
@@ -920,6 +921,12 @@ COMPOSITOR.process.service("key-sheet", {
   ],
   restart: "on-exit",
 });
+// The launcher's search helper: apps, files, settings, maths, web
+// (tools/shoji-find in the ShojiWM repo).
+COMPOSITOR.process.service("shoji-find", {
+  command: ["sh", "-c", 'exec "$HOME/.local/bin/shoji-find" "$1"', "shoji-find", defaultSocketPath()],
+  restart: "on-exit",
+});
 // cliphist clipboard history watchers. Text and image need separate watchers;
 // run as services so they are restarted if they ever exit.
 COMPOSITOR.process.service("cliphist-text", {
@@ -954,7 +961,35 @@ if (INSIDE_KDE) {
 // The launcher on the panel: Kickoff (Mac look) or SevenStart (Aero look).
 const KICKOFF_ID_SCRIPT =
   'panels().forEach(function (p) { ["org.kde.plasma.kickoff", "io.gitgud.wackyideas.SevenStart"].forEach(function (plugin) { p.widgets(plugin).forEach(function (w) { if (!w.globalShortcut) { w.globalShortcut = "Alt+F1"; } print(w.id + "\\n"); }); }); });';
+
+/**
+ * What Super opens: "shoji" is the centred launcher drawn by ShojiWM
+ * (./launcher.tsx), "sevenstart" the panel's own start menu (SevenStart or
+ * Kickoff, through Plasma scripting). Switch back here if needed.
+ */
+const LAUNCHER = "shoji" as "shoji" | "sevenstart";
+const SHOJI_LAUNCHER = createLauncher({
+  ipc: WORKSPACE_IPC,
+  // Apps started from it get KDE's environment, as from the start menu.
+  spawnEnv: INSIDE_KDE ? undefined : KDE_SERVICE_ENV,
+  glass: computed(() => !qualityLight()),
+});
+// The launcher's host window: an empty surface the launcher is drawn on
+// (see the helper's header).
+COMPOSITOR.process.service("launcher-host", {
+  command: [
+    "sh",
+    "-c",
+    'exec python3 "$HOME/.config/shojiwm/src/helpers/launcher-host.py"',
+  ],
+  restart: "on-exit",
+});
+
 function toggleLauncher() {
+  if (LAUNCHER === "shoji") {
+    SHOJI_LAUNCHER.toggle();
+    return;
+  }
   COMPOSITOR.process.spawn({
     command: [
       "sh",
@@ -1752,6 +1787,11 @@ function usesClientDecoration(decoration: WindowDecorationState): boolean {
 }
 
 COMPOSITOR.window.composition = (window: WaylandWindow) => {
+  // The launcher's host window carries the whole launcher (./launcher.tsx).
+  const launcher = SHOJI_LAUNCHER.compose(window);
+  if (launcher) {
+    return launcher;
+  }
   // A plasmashell window stays one: read it without subscribing, so its
   // moves do not build the composition again. Other windows subscribe, in
   // case the plasma role or position comes after the first composition.
