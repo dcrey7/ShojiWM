@@ -12,6 +12,13 @@ import { computed, signal } from "shoji_wm";
  *   1 LIGHT    no glass, no blur, no shadows
  *   2 MINIMAL  also no Magic Lamp and no wobbly drag
  */
+/**
+ * Off: the look never changes by itself. Every effect stays on at any load
+ * (Abhishek's choice, 8 Nov 2026); a busy GPU may stutter instead.
+ * Set it to true to bring back the automatic levels below.
+ */
+export const AUTO_QUALITY = false;
+
 export const QUALITY_FULL = 0;
 export const QUALITY_LIGHT = 1;
 export const QUALITY_MINIMAL = 2;
@@ -95,6 +102,9 @@ export function retryQualityIfDue(nowMs: number = Date.now()) {
  * Pass 0 for the first frame of an animation; it is ignored.
  */
 export function recordAnimationFrame(deltaMs: number, nowMs: number = Date.now()) {
+  if (!AUTO_QUALITY) {
+    return;
+  }
   retryQualityIfDue(nowMs);
   if (deltaMs <= 0) {
     return;
