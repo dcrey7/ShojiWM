@@ -655,13 +655,15 @@ WORKSPACE_IPC.handle("debug.maximizeButton", (params) => {
 
 // Grows a traffic light like a hover does, for tests with no pointer.
 WORKSPACE_IPC.handle("debug.trafficLightGrow", (params) => {
-  const { windowId, kind, to, durationMs, glow } = (params ?? {}) as {
+  const { windowId, kind, to, durationMs, glow, glyph } = (params ?? {}) as {
     windowId?: string;
     kind?: keyof typeof TRAFFIC_LIGHT_GROW;
     to?: number;
     durationMs?: number;
     /** Also fade the hover glow in (true) or out (false). */
     glow?: boolean;
+    /** Also show (true) or hide (false) the hover glyph. */
+    glyph?: boolean;
   };
   const window =
     typeof windowId === "string" ? HYBRID_WINDOW_MANAGER.findWindowById(windowId) : undefined;
@@ -680,6 +682,9 @@ WORKSPACE_IPC.handle("debug.trafficLightGrow", (params) => {
       to: glow ? 1 : 0,
       easing: TRAFFIC_LIGHT_GLOW_EASING,
     });
+  }
+  if (glyph !== undefined) {
+    window.animation.start(TRAFFIC_LIGHT_DEBUG_GLYPH[kind ?? "close"], { duration: 1, to: glyph ? 1 : 0 });
   }
   return { started: true };
 });
@@ -2231,7 +2236,8 @@ const TRAFFIC_LIGHT_BODIES = {
  * springs back up. The values add to a scale of 1.
  */
 // 16 px x 1.25 = 20 px: a whole pixel size, so the hovered light stays sharp
-// (at 1.2 it was 19.2 px, drawn blurred). The white glyph PNGs are 20 px.
+// (at 1.2 it was 19.2 px, drawn blurred). The white glyph PNGs are 20 px
+// (tools/make-white-glyphs.sh; they carry the launcher glyphs' dark edge).
 const TRAFFIC_LIGHT_HOVER_GROW = 0.25;
 const TRAFFIC_LIGHT_PRESS_GROW = -0.1;
 const TRAFFIC_LIGHT_PRESS_MS = 60;
@@ -2261,6 +2267,12 @@ const TRAFFIC_LIGHT_GLOW = {
   maximize: animationVariable("trafficLightGlow.maximize"),
 };
 const TRAFFIC_LIGHT_GLOW_STEPS = 6;
+/** Tests only: 1 shows a light's hover glyph with no pointer (debug.trafficLightGrow). */
+const TRAFFIC_LIGHT_DEBUG_GLYPH = {
+  close: animationVariable("trafficLightDebugGlyph.close"),
+  minimize: animationVariable("trafficLightDebugGlyph.minimize"),
+  maximize: animationVariable("trafficLightDebugGlyph.maximize"),
+};
 const TRAFFIC_LIGHT_GLOW_IN_MS = 130;
 const TRAFFIC_LIGHT_GLOW_OUT_MS = 250;
 const TRAFFIC_LIGHT_GLOW_EASING = (t: number) => 1 - (1 - t) ** 3;
@@ -2408,6 +2420,18 @@ const TrafficLight = ({
           }}
         />
       ) : null}
+      {/* The same glyph, shown by a test with no pointer. */}
+      <Image
+        src={glyph}
+        style={{
+          width: TRAFFIC_LIGHT_SIZE,
+          height: TRAFFIC_LIGHT_SIZE,
+          position: "absolute",
+          zIndex: 1,
+          pointerEvents: "none",
+          visible: computed(() => window.animation.variable(TRAFFIC_LIGHT_DEBUG_GLYPH[kind])() > 0.5),
+        }}
+      />
     </Box>
   );
 };
@@ -2417,7 +2441,7 @@ const CloseButton = ({ window }: { window: WaylandWindow }) => (
     window={window}
     kind="close"
     body={trafficLightBody(window, TRAFFIC_LIGHT_BODIES.close)}
-    glyph="./assets/mac-glass-white-x.png"
+    glyph="./assets/mac-glass-glyph-x.png"
     enabled={() => true}
     onClick={window.close}
   />
@@ -2433,7 +2457,7 @@ const MaximizeButton = ({ window }: { window: WaylandWindow }) => {
   );
   // macOS's full screen glyph: triangles out to maximize, in to restore.
   const glyph = window.isMaximized((maximized) =>
-    maximized ? "./assets/mac-glass-white-shrink.png" : "./assets/mac-glass-white-expand.png",
+    maximized ? "./assets/mac-glass-glyph-shrink.png" : "./assets/mac-glass-glyph-expand.png",
   );
 
   return (
@@ -2453,7 +2477,7 @@ const MinimizeButton = ({ window }: { window: WaylandWindow }) => (
     window={window}
     kind="minimize"
     body={trafficLightBody(window, TRAFFIC_LIGHT_BODIES.minimize)}
-    glyph="./assets/mac-glass-white-minus.png"
+    glyph="./assets/mac-glass-glyph-minus.png"
     enabled={() => true}
     onClick={() => window.minimize()}
   />
