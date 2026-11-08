@@ -2230,7 +2230,9 @@ const TRAFFIC_LIGHT_BODIES = {
  * down to 90% at once, held at least TRAFFIC_LIGHT_PRESS_HOLD_MS, then it
  * springs back up. The values add to a scale of 1.
  */
-const TRAFFIC_LIGHT_HOVER_GROW = 0.2;
+// 16 px x 1.25 = 20 px: a whole pixel size, so the hovered light stays sharp
+// (at 1.2 it was 19.2 px, drawn blurred). The white glyph PNGs are 20 px.
+const TRAFFIC_LIGHT_HOVER_GROW = 0.25;
 const TRAFFIC_LIGHT_PRESS_GROW = -0.1;
 const TRAFFIC_LIGHT_PRESS_MS = 60;
 const TRAFFIC_LIGHT_PRESS_HOLD_MS = 100;
@@ -2415,7 +2417,7 @@ const CloseButton = ({ window }: { window: WaylandWindow }) => (
     window={window}
     kind="close"
     body={trafficLightBody(window, TRAFFIC_LIGHT_BODIES.close)}
-    glyph="./assets/mac-glass-x.svg"
+    glyph="./assets/mac-glass-white-x.png"
     enabled={() => true}
     onClick={window.close}
   />
@@ -2431,7 +2433,7 @@ const MaximizeButton = ({ window }: { window: WaylandWindow }) => {
   );
   // macOS's full screen glyph: triangles out to maximize, in to restore.
   const glyph = window.isMaximized((maximized) =>
-    maximized ? "./assets/mac-glass-shrink.svg" : "./assets/mac-glass-expand.svg",
+    maximized ? "./assets/mac-glass-white-shrink.png" : "./assets/mac-glass-white-expand.png",
   );
 
   return (
@@ -2451,7 +2453,7 @@ const MinimizeButton = ({ window }: { window: WaylandWindow }) => (
     window={window}
     kind="minimize"
     body={trafficLightBody(window, TRAFFIC_LIGHT_BODIES.minimize)}
-    glyph="./assets/mac-glass-minus.svg"
+    glyph="./assets/mac-glass-white-minus.png"
     enabled={() => true}
     onClick={() => window.minimize()}
   />
