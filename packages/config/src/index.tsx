@@ -986,7 +986,9 @@ const SHOJI_LAUNCHER = createLauncher({
   ipc: WORKSPACE_IPC,
   // Apps started from it get KDE's environment, as from the start menu.
   spawnEnv: INSIDE_KDE ? undefined : KDE_SERVICE_ENV,
-  glass: computed(() => !qualityLight()),
+  // Always blurred, even in light quality mode: without the blur the apps
+  // behind show through the panel. One small panel costs little.
+  glass: computed(() => true),
 });
 // The launcher's host window: an empty surface the launcher is drawn on
 // (see the helper's header).
