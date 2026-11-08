@@ -1103,7 +1103,12 @@ export function createLauncher(options: LauncherOptions): Launcher {
       .then(done);
   }
 
-  const toggle = (source?: string) => (isOpen.peek() && !closing ? close(source) : open(source));
+  // A real toggle (Super or the orb) ends any test's dry run. A dry run left on
+  // stops the orb pulse and app launches.
+  const toggle = (source?: string) => {
+    dryRun = false;
+    return isOpen.peek() && !closing ? close(source) : open(source);
+  };
   // A toggle that comes within 100 ms of the last one is the same click sent
   // twice (the orb's script can send its line twice): drop it.
   let lastIpcToggle = 0;
