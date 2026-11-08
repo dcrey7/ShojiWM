@@ -22,6 +22,8 @@ import {
   keyChar,
   layoutHome,
   layoutResults,
+  glowSize,
+  hoverGrow,
   lightIcon,
   lightSize,
   mergeResults,
@@ -67,6 +69,17 @@ test("only the Shut down light is as big as the avatar; icons are about half", (
   for (let index = 0; index < 5; index++) {
     assert.equal((lightSize(index) - lightIcon(index)) % 2, 0, "the icon sits on whole pixels");
     assert.ok(Math.abs(lightIcon(index) / lightSize(index) - 0.5) < 0.06);
+  }
+});
+
+test("a hovered light and the avatar grow to whole, even pixel sizes (they stay sharp)", () => {
+  for (const size of [lightSize(0), lightSize(4), 26, 30, 34]) {
+    const grown = size * (1 + hoverGrow(size));
+    assert.ok(Math.abs(grown - Math.round(grown)) < 1e-9, `${size} grows to ${grown}`);
+    assert.equal((Math.round(grown) - size) % 2, 0, "it grows the same on both sides");
+    assert.ok(Math.abs(hoverGrow(size) - 0.2) < 0.04, `about 20%, got ${hoverGrow(size)}`);
+    const glow = glowSize(size) * (1 + hoverGrow(size));
+    assert.ok(Math.abs(glow - Math.round(grown) - 6) < 1e-9, `the grown glow is 3 px wider on each side, got ${glow}`);
   }
 });
 

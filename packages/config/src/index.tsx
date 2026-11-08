@@ -655,11 +655,13 @@ WORKSPACE_IPC.handle("debug.maximizeButton", (params) => {
 
 // Grows a traffic light like a hover does, for tests with no pointer.
 WORKSPACE_IPC.handle("debug.trafficLightGrow", (params) => {
-  const { windowId, kind, to, durationMs } = (params ?? {}) as {
+  const { windowId, kind, to, durationMs, glow } = (params ?? {}) as {
     windowId?: string;
     kind?: keyof typeof TRAFFIC_LIGHT_GROW;
     to?: number;
     durationMs?: number;
+    /** Also fade the hover glow in (true) or out (false). */
+    glow?: boolean;
   };
   const window =
     typeof windowId === "string" ? HYBRID_WINDOW_MANAGER.findWindowById(windowId) : undefined;
@@ -672,6 +674,13 @@ WORKSPACE_IPC.handle("debug.trafficLightGrow", (params) => {
     to: to ?? TRAFFIC_LIGHT_HOVER_GROW,
     easing: TRAFFIC_LIGHT_HOVER_EASING,
   });
+  if (glow !== undefined) {
+    window.animation.start(TRAFFIC_LIGHT_GLOW[kind ?? "close"], {
+      duration: glow ? TRAFFIC_LIGHT_GLOW_IN_MS : TRAFFIC_LIGHT_GLOW_OUT_MS,
+      to: glow ? 1 : 0,
+      easing: TRAFFIC_LIGHT_GLOW_EASING,
+    });
+  }
   return { started: true };
 });
 
@@ -2236,6 +2245,25 @@ const TRAFFIC_LIGHT_GROW = {
   minimize: animationVariable("trafficLightGrow.minimize"),
   maximize: animationVariable("trafficLightGrow.maximize"),
 };
+/**
+ * A coloured light glows under the pointer like the start orb: a halo
+ * outside the rim and light inside the glass from the bottom, in the
+ * light's own colour (tools/make-hover-glow.py). It fades in over 130 ms
+ * and out over 250 ms (Qt's OutCubic), as the orb's hover does. ShojiWM
+ * draws an image at full strength, so the fade steps through drawn
+ * strengths, from -1 (faint) to -6 (full).
+ */
+const TRAFFIC_LIGHT_GLOW = {
+  close: animationVariable("trafficLightGlow.close"),
+  minimize: animationVariable("trafficLightGlow.minimize"),
+  maximize: animationVariable("trafficLightGlow.maximize"),
+};
+const TRAFFIC_LIGHT_GLOW_STEPS = 6;
+const TRAFFIC_LIGHT_GLOW_IN_MS = 130;
+const TRAFFIC_LIGHT_GLOW_OUT_MS = 250;
+const TRAFFIC_LIGHT_GLOW_EASING = (t: number) => 1 - (1 - t) ** 3;
+/** The glow image holds the light and 2 units of room (of 28) on each side for the halo. */
+const TRAFFIC_LIGHT_GLOW_SIZE = (TRAFFIC_LIGHT_SIZE * 32) / 28;
 
 // The Window View's hovered card shows colour, like a focused window.
 const trafficLightBody = (window: WaylandWindow, body: string) =>
@@ -2268,7 +2296,20 @@ const TrafficLight = ({
   const [hover, setHover] = useState(false);
   const [pressed, setPressed] = useState(false);
   const grow = TRAFFIC_LIGHT_GROW[kind];
+  const glow = TRAFFIC_LIGHT_GLOW[kind];
+  const glowStep = computed(() =>
+    Math.ceil(window.animation.variable(glow)() * TRAFFIC_LIGHT_GLOW_STEPS - 0.01),
+  );
   let pressedAt = 0;
+
+  const fadeGlow = (on: boolean) => {
+    const show = on && enabled();
+    window.animation.start(glow, {
+      duration: show ? TRAFFIC_LIGHT_GLOW_IN_MS : TRAFFIC_LIGHT_GLOW_OUT_MS,
+      to: show ? 1 : 0,
+      easing: TRAFFIC_LIGHT_GLOW_EASING,
+    });
+  };
 
   const animateGrow = () => {
     if (read(pressed) && enabled()) {
@@ -2309,6 +2350,19 @@ const TrafficLight = ({
           pointerEvents: "none",
         }}
       />
+      {/* The orb's hover glow, on a coloured light only (not the grey one). */}
+      <Image
+        src={computed(() => `./assets/mac-glass-hover-${kind}-${Math.max(1, glowStep())}.png`)}
+        style={{
+          width: TRAFFIC_LIGHT_GLOW_SIZE,
+          height: TRAFFIC_LIGHT_GLOW_SIZE,
+          left: -(TRAFFIC_LIGHT_GLOW_SIZE - TRAFFIC_LIGHT_SIZE) / 2,
+          top: -(TRAFFIC_LIGHT_GLOW_SIZE - TRAFFIC_LIGHT_SIZE) / 2,
+          position: "absolute",
+          pointerEvents: "none",
+          visible: computed(() => glowStep() > 0 && read(body) !== TRAFFIC_LIGHT_BODIES.inactive),
+        }}
+      />
       <Button
         onHoverChange={(value) => {
           setHover(value);
@@ -2316,6 +2370,7 @@ const TrafficLight = ({
             setPressed(false);
           }
           animateGrow();
+          fadeGlow(value);
         }}
         onActiveChange={(value) => {
           setPressed(value);

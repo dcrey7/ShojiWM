@@ -180,6 +180,19 @@ export const SHUTDOWN_LIGHT_SIZE = ACCOUNT.avatar;
 export const lightSize = (index: number) => (index === 4 ? SHUTDOWN_LIGHT_SIZE : LIGHT_SIZE);
 /** About half the light, with the same parity so it sits on whole pixels. */
 export const lightIcon = (index: number) => 2 * Math.round(lightSize(index) / 4);
+/**
+ * How much a light (or the avatar) of `size` px grows on hover: about 20%,
+ * rounded so it ends a whole, even number of pixels wider. A grown image with
+ * edges between pixels is drawn blurred; on whole pixels it stays sharp.
+ */
+export const hoverGrow = (size: number) => (2 * Math.round(size * 0.1)) / size;
+/**
+ * The hover glow image of a `size` px light: the light plus room for the
+ * halo, 3 px on each side once grown, so it too ends on whole pixels.
+ * tools/make-hover-glow.py draws it with the same room.
+ */
+export const HOVER_GLOW_ROOM = 3;
+export const glowSize = (size: number) => size + (2 * HOVER_GLOW_ROOM) / (1 + hoverGrow(size));
 export const LIGHT_PITCH = LIGHT_BUTTON + px(6);
 export const FIRST_LIGHT_X = CONTENT_X + CONTENT_WIDTH - 5 * LIGHT_BUTTON - 4 * (LIGHT_PITCH - LIGHT_BUTTON);
 

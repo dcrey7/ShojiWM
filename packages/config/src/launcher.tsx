@@ -65,7 +65,8 @@ import {
   HEADER_X,
   LIGHT_BUTTON,
   LIGHT_PITCH,
-  lightIcon,
+  glowSize,
+  hoverGrow,
   lightSize,
   MAX_RESULT_TILES,
   NOTE_HEIGHT,
@@ -144,6 +145,25 @@ const SELECTED_GLOW = [{ blur: px(9), spread: 1, color: "#fff6e642" }];
 const NO_BORDER = "#00000000";
 const HOVER_FILL = "#ffffff0f";
 const ACCOUNT_HOVER_FILL = "#ffffff12";
+/**
+ * A hovered light or the avatar glows like the start orb: its hover glow
+ * (a halo outside the rim, a light inside the glass from the bottom, a
+ * brighter rim), in the button's own colour. It is one overlay image per
+ * button (tools/make-hover-glow.py), faded in and out with the orb's timing.
+ */
+const GLOW_IN_MS = 130;
+const GLOW_OUT_MS = 250;
+/** The glow images come in this many strengths (`STEPS` in the generator). */
+const GLOW_STEPS = 6;
+/** Qt's OutCubic, as the orb uses. */
+const OUT_CUBIC = (t: number) => 1 - (1 - t) ** 3;
+/** The name of a power button shows after the pointer rests on it this long. */
+const TIP_DELAY_MS = 400;
+/** Tooltips: the context pill's dark glass, smaller, with white text. */
+const TIP_HEIGHT = px(26);
+const TIP_PAD_X = px(11);
+/** A rough text width per character, to keep a tooltip inside the panel. */
+const TIP_CHAR_WIDTH = px(7.6);
 /** The panel sits above every window and plasmashell popup (tooltips: 2_130_000_000). */
 const LAUNCHER_Z_INDEX = 2_140_000_000;
 const GENERIC_ICON = "/usr/share/icons/breeze-dark/mimetypes/32/application-x-executable.svg";
@@ -250,7 +270,11 @@ const FALLBACK_HOME: HomeData = {
   pinned: FALLBACK_APPS.slice(16, 40),
 };
 
-/** The power lights, left to right. */
+/**
+ * The power lights, left to right. Each is drawn as three images, bottom to
+ * top: the glass light, its hover glow, its white glyph (the glow lights
+ * the glass under the glyph, as the orb's glow does under its dots).
+ */
 const POWER = [
   { id: "lock", title: "Lock", body: "./assets/launcher-light-yellow.svg", command: ["loginctl", "lock-session"] },
   { id: "sleep", title: "Sleep", body: "./assets/launcher-light-blue.svg", command: ["systemctl", "suspend"] },
@@ -258,6 +282,7 @@ const POWER = [
   { id: "restart", title: "Restart", body: "./assets/launcher-light-green.svg", command: ["qdbus6", "org.kde.LogoutPrompt", "/LogoutPrompt", "promptReboot"] },
   { id: "shutdown", title: "Shut down", body: "./assets/launcher-light-red.svg", command: ["qdbus6", "org.kde.LogoutPrompt", "/LogoutPrompt", "promptShutDown"] },
 ] as const;
+const ACCOUNT_TITLE = "Account settings";
 const ACCOUNT_COMMAND = ["systemsettings", "kcm_users"];
 
 /** How long to wait for shoji-find before showing the built-in results. */
@@ -320,6 +345,8 @@ export function createLauncher(options: LauncherOptions): Launcher {
   const [meaningPending, setMeaningPending] = signal(false);
   const [selected, setSelected] = signal(0);
   const [hovered, setHovered] = signal<Target | null>(null);
+  /** The power button or avatar whose tooltip shows. */
+  const [tip, setTip] = signal<Target | null>(null);
   const [scroll, setScroll] = signal(0);
   const [caretOn, setCaretOn] = signal(true);
   /** Debug: the backdrop blur can be switched off to measure its cost. */
@@ -364,6 +391,12 @@ export function createLauncher(options: LauncherOptions): Launcher {
   const hoverAnim = (target: Anim | undefined, on: boolean, tile = false) => {
     if (target) {
       animate(target, on ? 1 : 0, tile ? TILE_HOVER_MS : HOVER_MS, tile ? TILE_HOVER_EASING : HOVER_EASING);
+    }
+  };
+  /** A light's or the avatar's glow: in 130 ms, out 250 ms, as the orb. */
+  const glowAnim = (target: Anim | undefined, on: boolean) => {
+    if (target) {
+      animate(target, on ? 1 : 0, on ? GLOW_IN_MS : GLOW_OUT_MS, OUT_CUBIC);
     }
   };
   const pressIn = (target: Anim | undefined) => {
@@ -441,8 +474,12 @@ export function createLauncher(options: LauncherOptions): Launcher {
   const resultTiles = slots(MAX_RESULT_TILES, "tile", () => resultSlots().tiles);
   const resultRows = slots(RESULT_ROWS, "row", () => resultSlots().rows);
   const resultPills = slots(RESULT_PILLS, "pill", () => resultSlots().pills);
-  const lights = POWER.map((_, k) => ({ press: anim(`launcher.light.${k}.press`), hover: anim(`launcher.light.${k}.hover`) }));
-  const account = { press: anim("launcher.account.press"), hover: anim("launcher.account.hover") };
+  const lights = POWER.map((_, k) => ({
+    press: anim(`launcher.light.${k}.press`),
+    hover: anim(`launcher.light.${k}.hover`),
+    glow: anim(`launcher.light.${k}.glow`),
+  }));
+  const account = { press: anim("launcher.account.press"), hover: anim("launcher.account.hover"), glow: anim("launcher.account.glow") };
 
   /** The slot that draws entry `index` of the current layout. */
   const slotOf = (index: number): Slot | undefined => {
@@ -455,7 +492,7 @@ export function createLauncher(options: LauncherOptions): Launcher {
     }
     return undefined;
   };
-  const animOf = (target: Target | null): { press?: Anim; hover?: Anim; tile?: boolean } => {
+  const animOf = (target: Target | null): { press?: Anim; hover?: Anim; glow?: Anim; tile?: boolean } => {
     if (!target) {
       return {};
     }
@@ -703,6 +740,17 @@ export function createLauncher(options: LauncherOptions): Launcher {
     return { kind: "panel" };
   };
 
+  let tipTimer: ReturnType<typeof setTimeout> | null = null;
+  const hideTip = () => {
+    if (tipTimer) {
+      clearTimeout(tipTimer);
+      tipTimer = null;
+    }
+    if (tip.peek()) {
+      setTip(null);
+    }
+  };
+
   const setHover = (target: Target | null) => {
     const previous = hovered.peek();
     if (sameTarget(previous, target) || (!previous && !target)) {
@@ -710,9 +758,20 @@ export function createLauncher(options: LauncherOptions): Launcher {
     }
     const before = animOf(previous);
     hoverAnim(before.hover, false, before.tile);
+    glowAnim(before.glow, false);
     const after = animOf(target);
     hoverAnim(after.hover, true, after.tile);
+    glowAnim(after.glow, true);
     setHovered(target);
+    hideTip();
+    if (target?.kind === "light" || target?.kind === "account") {
+      tipTimer = setTimeout(() => {
+        tipTimer = null;
+        if (isOpen.peek() && !closing && sameTarget(hovered.peek(), target)) {
+          setTip(target);
+        }
+      }, TIP_DELAY_MS);
+    }
     // As in the mock, the pointer selects what it is on.
     if (target?.kind === "entry") {
       setSelected(target.index);
@@ -793,6 +852,7 @@ export function createLauncher(options: LauncherOptions): Launcher {
       }
       setContext(null);
       pressed = target;
+      hideTip();
       pressIn(animOf(target).press);
       return;
     }
@@ -884,6 +944,8 @@ export function createLauncher(options: LauncherOptions): Launcher {
     if (closing) {
       return;
     }
+    // The keyboard takes over: a tooltip would cover what changes.
+    hideTip();
     // The grab sends one press per key: the launcher repeats a held key itself.
     if (REPEATING_KEYS.has(key) || keyChar(key, event.modifiers) !== null) {
       startRepeat(key, event.modifiers);
@@ -917,9 +979,11 @@ export function createLauncher(options: LauncherOptions): Launcher {
     if (!sameTarget(before, after)) {
       if (before && before.kind !== "entry" && !sameTarget(before, hovered.peek())) {
         hoverAnim(animOf(before).hover, false);
+        glowAnim(animOf(before).glow, false);
       }
       if (after && after.kind !== "entry") {
         hoverAnim(animOf(after).hover, true);
+        glowAnim(animOf(after).glow, true);
       }
     }
   };
@@ -1707,9 +1771,48 @@ export function createLauncher(options: LauncherOptions): Launcher {
     </Box>
   );
 
-  // The avatar grows and presses like the lights. A transform replaces its
-  // parent's, so the glass and the letter each carry it, both centred.
-  const avatarGrow = computed(() => 1 + 0.2 * account.hover.value() - 0.1 * account.press.value());
+  /**
+   * A round glass button: the glass, its hover glow, then its glyph. The
+   * three images share the button's centre and its grow (a transform
+   * replaces its parent's, so each one carries it). Grown on hover, all of
+   * them end on whole pixels, so they stay sharp.
+   */
+  const GlassButton = ({
+    size,
+    body,
+    glow,
+    glyph,
+    grow,
+    glowValue,
+  }: {
+    size: number;
+    body: string;
+    glow: string;
+    glyph: string;
+    grow: ReadonlySignal<number>;
+    glowValue: ReadonlySignal<number>;
+  }) => {
+    const room = (glowSize(size) - size) / 2;
+    // An image has no opacity here: the fade steps through drawn strengths.
+    const step = computed(() => Math.ceil(glowValue() * GLOW_STEPS - 0.01));
+    return (
+      <>
+        <SharpImage src={body} left={0} top={0} size={size} scale={grow} />
+        <SharpImage
+          src={computed(() => `${glow}-${Math.max(1, step())}.png`)}
+          left={-room}
+          top={-room}
+          size={glowSize(size)}
+          scale={grow}
+          visible={computed(() => step() > 0)}
+        />
+        <SharpImage src={glyph} left={0} top={0} size={size} scale={grow} />
+      </>
+    );
+  };
+
+  // The avatar grows and presses like the lights.
+  const avatarGrow = computed(() => 1 + hoverGrow(ACCOUNT.avatar) * account.hover.value() - 0.1 * account.press.value());
   const PowerRow = () => (
     <>
       <Box
@@ -1733,12 +1836,17 @@ export function createLauncher(options: LauncherOptions): Launcher {
             top: Math.round((ACCOUNT.height - ACCOUNT.avatar) / 2),
             width: ACCOUNT.avatar,
             height: ACCOUNT.avatar,
-            alignItems: "center",
-            justifyContent: "center",
           }}
         >
-          {/* The glass and the letter are one image (the letter is a path in the SVG). */}
-          <SharpImage src="./assets/launcher-avatar-a.svg" left={0} top={0} size={ACCOUNT.avatar} scale={avatarGrow} />
+          {/* The avatar is blue glass with your initial as the glyph. */}
+          <GlassButton
+            size={ACCOUNT.avatar}
+            body="./assets/launcher-light-blue.svg"
+            glow="./assets/launcher-hover-avatar"
+            glyph="./assets/launcher-avatar-letter.svg"
+            grow={avatarGrow}
+            glowValue={account.glow.value}
+          />
         </Box>
         <Box style={{ position: "absolute", left: ACCOUNT.nameX, top: 0, height: ACCOUNT.height, alignItems: "center" }}>
           <Label text={ACCOUNT_NAME} style={{ color: TEXT, fontFamily: FONT, fontSize: font(15), lineHeight: px(20) }} />
@@ -1746,10 +1854,7 @@ export function createLauncher(options: LauncherOptions): Launcher {
       </Box>
       {POWER.map((power, k) => {
         const size = lightSize(k);
-        const icon = lightIcon(k);
-        // A transform on an element replaces its parent's, so each image
-        // carries the whole grow (both are centred on the light).
-        const grow = computed(() => 1 + 0.2 * lights[k].hover.value() - 0.1 * lights[k].press.value());
+        const grow = computed(() => 1 + hoverGrow(size) * lights[k].hover.value() - 0.1 * lights[k].press.value());
         return (
           <Box
             style={{
@@ -1760,12 +1865,67 @@ export function createLauncher(options: LauncherOptions): Launcher {
               height: size,
             }}
           >
-            <SharpImage src={power.body} left={0} top={0} size={size} scale={grow} />
-            <SharpImage src={`./assets/launcher-icon-${power.id}.svg`} left={(size - icon) / 2} top={(size - icon) / 2} size={icon} scale={grow} />
+            <GlassButton
+              size={size}
+              body={power.body}
+              glow={`./assets/launcher-hover-${power.id}`}
+              glyph={`./assets/launcher-glyph-${power.id}.svg`}
+              grow={grow}
+              glowValue={lights[k].glow.value}
+            />
           </Box>
         );
       })}
     </>
+  );
+
+  /**
+   * The name of the power button or avatar under the pointer: a small dark
+   * glass pill above it, kept inside the panel. Its width is a guess from
+   * the text, only to keep it off the panel edge; the pill sizes to the text.
+   */
+  const tipText = computed(() => {
+    const target = tip();
+    return target?.kind === "light" ? POWER[target.index].title : target?.kind === "account" ? ACCOUNT_TITLE : "";
+  });
+  const tipBox = computed(() => {
+    const target = tip();
+    const center =
+      target?.kind === "light"
+        ? FIRST_LIGHT_X + target.index * LIGHT_PITCH + LIGHT_BUTTON / 2
+        : ACCOUNT.x + ACCOUNT.height / 2;
+    const width = Math.round(tipText().length * TIP_CHAR_WIDTH + 2 * TIP_PAD_X);
+    const left = Math.max(CONTENT_X, Math.min(CONTENT_X + CONTENT_WIDTH - width, Math.round(center - width / 2)));
+    return { left, width };
+  });
+  const Tooltip = () => (
+    <Box
+      style={{
+        position: "absolute",
+        left: tipBox((box) => box.left),
+        top: POWER_Y - TIP_HEIGHT - px(3),
+        width: tipBox((box) => box.width),
+        height: TIP_HEIGHT,
+        alignItems: "center",
+        visible: computed(() => tip() !== null),
+      }}
+    >
+      <Box
+        style={{
+          height: TIP_HEIGHT,
+          paddingX: TIP_PAD_X,
+          borderRadius: TIP_HEIGHT / 2,
+          background: "#1d2028f2",
+          border: { px: 1, color: "#ffffff40" },
+          boxShadow: [{ y: 3, blur: 10, color: "#00000080" }],
+          alignItems: "center",
+          justifyContent: "center",
+          flexShrink: 0,
+        }}
+      >
+        <Label text={tipText} style={{ color: "#ffffff", fontFamily: FONT, fontSize: font(13), lineHeight: px(18) }} />
+      </Box>
+    </Box>
   );
 
   const ContextPill = () => (
@@ -1846,6 +2006,7 @@ export function createLauncher(options: LauncherOptions): Launcher {
             </Box>
           </Box>
           <PowerRow />
+          <Tooltip />
           <ContextPill />
           <Box style={{ position: "absolute", left: 0, top: 0, width: 1, height: 1, overflow: "hidden" }}>
             <ClientWindow />
