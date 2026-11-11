@@ -1259,7 +1259,7 @@ export function createLauncher(options: LauncherOptions): Launcher {
         return;
       }
       if (target.kind === "outside") {
-        close();
+        close("click-outside");
         return;
       }
       if (target.kind === "context") {
@@ -1352,7 +1352,7 @@ export function createLauncher(options: LauncherOptions): Launcher {
         superDown = true;
       } else if (superDown) {
         superDown = false;
-        close();
+        close("super-key");
       }
       return;
     }
@@ -1418,7 +1418,7 @@ export function createLauncher(options: LauncherOptions): Launcher {
         } else if (text.peek().text) {
           setQuery({ text: "", caret: 0 });
         } else {
-          close();
+          close("escape");
         }
         return;
       case "Return":
@@ -1540,7 +1540,7 @@ export function createLauncher(options: LauncherOptions): Launcher {
       onScroll,
       onCancel: () => {
         grab = null;
-        close();
+        close("grab-cancel");
       },
     });
     ipc.broadcast("launcher.home", {});
@@ -1603,9 +1603,18 @@ export function createLauncher(options: LauncherOptions): Launcher {
 
   // A real toggle (Super or the orb) ends any test's dry run. A dry run left on
   // stops the orb pulse and app launches.
+  // A second toggle within 150 ms is the same press seen twice (Super and the
+  // orb both): drop it, so one press never opens and closes at once.
+  let lastToggle = 0;
   const toggle = (source?: string) => {
     dryRun = false;
     slow = 1;
+    const now = Date.now();
+    if (now - lastToggle < 150) {
+      note({ toggle: source ?? "", skipped: "repeat within 150 ms" });
+      return;
+    }
+    lastToggle = now;
     return isOpen.peek() && !closing ? close(source) : open(source);
   };
   // A toggle that comes within 100 ms of the last one is the same click sent
@@ -1692,7 +1701,7 @@ export function createLauncher(options: LauncherOptions): Launcher {
     if (raw.open === true) {
       open();
     } else if (raw.open === false) {
-      close();
+      close("debug");
     }
     const modifiers = { super: false, alt: false, ctrl: !!raw.ctrl, shift: !!raw.shift };
     if (typeof raw.type === "string" && isOpen.peek()) {

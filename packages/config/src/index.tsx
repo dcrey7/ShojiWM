@@ -1022,7 +1022,7 @@ COMPOSITOR.process.service("launcher-host", {
 
 function toggleLauncher() {
   if (LAUNCHER === "shoji") {
-    SHOJI_LAUNCHER.toggle();
+    SHOJI_LAUNCHER.toggle("super");
     return;
   }
   COMPOSITOR.process.spawn({
