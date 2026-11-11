@@ -1893,7 +1893,7 @@ COMPOSITOR.window.composition = (window: WaylandWindow) => {
   // (an animation runs, a switcher is open, or the GPU is too busy), a
   // see-through bar would show sharp text from behind, so it turns solid.
   const titlebarBackground = computed(() =>
-    TITLEBAR_STYLE() === "aero"
+    glossyTitlebar(TITLEBAR_STYLE())
       ? GLASS_PAUSED()
         ? window.isFocused()
           ? "#14171df2"
@@ -1921,8 +1921,9 @@ COMPOSITOR.window.composition = (window: WaylandWindow) => {
     background: titlebarBackground,
   };
 
-  const titleOnlyShader =
-    TITLEBAR_STYLE() === "aero" ? AERO_TITLE_SHADER : MAC_TITLE_SHADER;
+  const titleOnlyShader = glossyTitlebar(TITLEBAR_STYLE())
+    ? AERO_TITLE_SHADER
+    : MAC_TITLE_SHADER;
   // No backdrop effects while the window switcher shows the windows as
   // textures: there is nothing under a window there to blur.
   const blurSuspended = GLASS_PAUSED();
@@ -2132,6 +2133,17 @@ const TITLEBAR_STYLE = signal<TitlebarStyle>("aero");
  * (`AeroCaptionButtons`).
  */
 const AERO_CAPTION = "mac-lights" as "mac-lights" | "aero-strip";
+
+/**
+ * The Aero title bar's glass: "frosted" is the plain see-through blur of the
+ * "mac" look (Abhishek's choice, 11 Nov 2026); "gloss" is Windows 7's dark
+ * glass with shine and streaks. The traffic lights stay either way.
+ */
+const AERO_TITLE_GLASS = "frosted" as "frosted" | "gloss";
+
+/** The title bar draws Windows 7's glossy glass. */
+const glossyTitlebar = (style: TitlebarStyle) =>
+  style === "aero" && AERO_TITLE_GLASS === "gloss";
 
 /** The title bar shows Windows 7's joined strip of buttons. */
 const usesAeroStrip = (style: TitlebarStyle) =>
