@@ -305,6 +305,8 @@ pub struct ShojiWM {
     /// KDE's virtual desktops, for plasmashell's Pager.
     pub plasma_virtual_desktop_state: crate::plasma_virtual_desktop::PlasmaVirtualDesktopState,
     pub plasma_shell_state: crate::protocols::plasma_shell::PlasmaShellState,
+    /// The output order for plasmashell (`kde_output_order_v1`).
+    pub output_order_state: crate::protocols::output_order::OutputOrderState,
     pub ext_workspace_manager_state: crate::workspace_manager::ExtWorkspaceManagerState,
     pub image_capture_source_state: smithay::wayland::image_capture_source::ImageCaptureSourceState,
     pub output_capture_source_state:
@@ -1691,6 +1693,7 @@ impl ShojiWM {
             crate::plasma_virtual_desktop::PlasmaVirtualDesktopState::new(&dh);
         crate::xdg_toplevel_tag::init_xdg_toplevel_tag(&dh);
         let plasma_shell_state = crate::protocols::plasma_shell::PlasmaShellState::new(&dh);
+        let output_order_state = crate::protocols::output_order::OutputOrderState::new(&dh);
         let ext_workspace_manager_state =
             crate::workspace_manager::ExtWorkspaceManagerState::new::<Self>(&dh);
         let image_capture_source_state =
@@ -1851,6 +1854,7 @@ impl ShojiWM {
             plasma_window_management_state,
             plasma_virtual_desktop_state,
             plasma_shell_state,
+            output_order_state,
             ext_workspace_manager_state,
             image_capture_source_state,
             output_capture_source_state,
@@ -2113,6 +2117,7 @@ impl ShojiWM {
                 (refresh > 0).then_some(refresh)
             },
         );
+        self.output_order_state.add_output(&output_name);
         self.runtime_output_globals
             .insert(output_name, global.clone());
         global
@@ -2125,6 +2130,7 @@ impl ShojiWM {
         let Some(global) = self.runtime_output_globals.remove(&output_name) else {
             return;
         };
+        self.output_order_state.remove_output(&output_name);
 
         // Layer-shell clients bind their windows to a specific output. Close and unmap those
         // surfaces before withdrawing wl_output so clients can tear down their windows while the
