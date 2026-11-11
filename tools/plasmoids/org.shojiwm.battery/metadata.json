@@ -1,0 +1,15 @@
+{
+    "KPackageStructure": "Plasma/Applet",
+    "KPlugin": {
+        "Authors": [{ "Name": "Abhishek" }],
+        "Category": "System Information",
+        "Description": "The battery level as a number inside a battery, green, yellow or red",
+        "Icon": "battery-good",
+        "Id": "org.shojiwm.battery",
+        "License": "GPL-2.0-or-later",
+        "Name": "Battery (number inside)",
+        "Version": "1.0"
+    },
+    "X-Plasma-API-Minimum-Version": "6.0",
+    "X-Plasma-MainScript": "ui/main.qml"
+}
