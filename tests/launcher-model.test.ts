@@ -11,6 +11,7 @@ import {
   ROW_HEIGHT,
   ROW_HEIGHT_WITH_SUB,
   TILE_HEIGHT,
+  TILE_ICON,
   TILE_WIDTH,
   bottomEntries,
   editText,
@@ -39,6 +40,22 @@ import {
   type LauncherApp,
   type LauncherItem,
   type LauncherResults,
+  BUDGET,
+  MOTION,
+  cascadeAt,
+  cascadeRows,
+  evenGrowPx,
+  hoverIconScale,
+  flipKey,
+  flipMoves,
+  flipIn,
+  flipScale,
+  flipShift,
+  glideAt,
+  glideEnd,
+  glideJump,
+  glideTo,
+  springAt,
 } from "../packages/config/src/launcher-model";
 
 const app = (name: string): LauncherApp => ({ id: `${name}.desktop`, name, icon: "", exec: name.toLowerCase() });
@@ -323,4 +340,122 @@ test("a held key: nothing during the delay, then the rate, speeding up to 2x", (
   assert.equal(repeatsDue(1250, 250, 30), 1 + 45);
   // From then on, twice the rate: 60 per second.
   assert.equal(repeatsDue(2250, 250, 30) - repeatsDue(1250, 250, 30), 60);
+});
+
+// ---------------------------------------------------------------- motion
+
+const near = (actual: number, expected: number, within = 1e-6) =>
+  assert.ok(Math.abs(actual - expected) <= within, `${actual} is not ${expected}`);
+
+test("the spring starts at 0, swings a little past 1 and ends exactly at 1", () => {
+  const { zeta } = MOTION.open;
+  assert.equal(springAt(0, zeta), 0);
+  assert.equal(springAt(1, zeta), 1);
+  const samples = Array.from({ length: 101 }, (_, k) => springAt(k / 100, zeta));
+  const peak = Math.max(...samples);
+  // A tiny overshoot: under 10% of the move (0.4% of the panel's scale).
+  assert.ok(peak > 1 && peak < 1.1, `peak ${peak}`);
+  // Settled long before its end: within 0.2% after 70% of the time.
+  assert.ok(samples.slice(70).every((value) => Math.abs(value - 1) < 0.02), "settled");
+});
+
+test("the budget: the cascade fits in the open, and the open spring stops within a pixel", () => {
+  assert.ok(BUDGET.cascade.total <= BUDGET.open);
+  assert.ok(BUDGET.cascade.row <= BUDGET.cascade.total);
+  // The panel is about 950 px wide: 0.04 of scale left over is under a pixel.
+  const left = Math.abs(1 - springAt(BUDGET.open / MOTION.open.spring, MOTION.open.zeta)) * (1 - MOTION.open.fromScale);
+  assert.ok(left * 950 < 1, `${left * 950} px`);
+});
+
+test("hover growth is an even number of px, so the icon stays on whole pixels", () => {
+  assert.equal(evenGrowPx(46, 0.06), 2);
+  assert.equal(evenGrowPx(52, 0.06), 4);
+  assert.equal(evenGrowPx(46, 0.06) % 2, 0);
+  // The hovered icon grows a little (about 6%), to a whole number of px.
+  const scale = hoverIconScale(TILE_ICON);
+  assert.ok(scale > 1.03 && scale < 1.09, `scale ${scale}`);
+  near(TILE_ICON * scale, Math.round(TILE_ICON * scale), 1e-9);
+});
+
+const box = (left: number, top: number, width = 100, height = 80) => ({ left, top, right: left + width, bottom: top + height });
+
+test("glide: the leading edge is fast, the trailing edge slow, so the ring stretches", () => {
+  const start = glideJump(box(0, 0), 0);
+  assert.deepEqual(glideAt(start, 0), box(0, 0));
+  // Moving right: the right edge leads, the left edge trails.
+  const moving = glideTo(start, box(200, 0), 0, 110, 190);
+  assert.equal(moving.right.duration, 110);
+  assert.equal(moving.left.duration, 190);
+  const mid = glideAt(moving, 60);
+  assert.ok(mid.right - mid.left > 100, `stretched to ${mid.right - mid.left}`);
+  assert.deepEqual(glideAt(moving, 190), box(200, 0));
+  assert.equal(glideEnd(moving), 190);
+  // Moving up: the top edge leads.
+  const up = glideTo(start, box(0, -120), 0, 110, 190);
+  assert.equal(up.top.duration, 110);
+  assert.equal(up.bottom.duration, 190);
+});
+
+test("glide: a new target mid-flight starts from where the ring is, with no jump", () => {
+  const first = glideTo(glideJump(box(0, 0), 0), box(200, 0), 0, 110, 190);
+  const before = glideAt(first, 50);
+  const second = glideTo(first, box(400, 0), 50, 110, 190);
+  const after = glideAt(second, 50);
+  near(after.left, before.left);
+  near(after.right, before.right);
+  assert.deepEqual(glideAt(second, 50 + 190), box(400, 0));
+  // An edge that already goes to its target keeps its own timing.
+  const same = glideTo(first, box(200, 0), 50, 110, 190);
+  assert.equal(same.left.start, 0);
+});
+
+test("cascade: rows start one after the other and all end at the total", () => {
+  const { total, row } = MOTION.cascade;
+  const rows = cascadeRows([30, 0, 120, 30, 230]);
+  assert.deepEqual([...rows.entries()], [[0, 0], [30, 1], [120, 2], [230, 3]]);
+  assert.equal(cascadeAt(0, 0, 4, total, row), 0);
+  assert.equal(cascadeAt(row, 0, 4, total, row), 1);
+  assert.equal(cascadeAt(total, 3, 4, total, row), 1);
+  assert.ok(cascadeAt(total - 1, 3, 4, total, row) < 1);
+  // The second row is a little behind the first.
+  assert.ok(cascadeAt(40, 1, 4, total, row) < cascadeAt(40, 0, 4, total, row));
+  // One row: no stagger.
+  assert.equal(cascadeAt(row, 0, 1, total, row), 1);
+});
+
+test("FLIP: an entry slides from its old place, a new one comes in", () => {
+  const before = new Map([
+    ["tile:a", { x: 10, y: 100 }],
+    ["tile:b", { x: 120, y: 100 }],
+  ]);
+  const moves = flipMoves(before, [
+    { key: "tile:b", x: 10, y: 100 },
+    { key: "tile:c", x: 120, y: 100 },
+    { key: "tile:b", x: 230, y: 100 },
+  ]);
+  assert.deepEqual(moves[0], { dx: 110, dy: 0, fresh: false });
+  assert.equal(moves[1].fresh, true);
+  // The same key twice: only the first one slides.
+  assert.equal(moves[2].fresh, true);
+  // At the start a moved entry is at its old place; at the end, at its new one.
+  assert.equal(flipShift(moves[0], 0, "x"), 110);
+  assert.equal(flipShift(moves[0], MOTION.flip.move, "x"), 0);
+  // A fresh one starts lower, smaller and see-through, and ends in place.
+  assert.equal(flipShift(moves[1], 0, "y"), MOTION.flip.rise);
+  assert.equal(flipScale(moves[1], 0), MOTION.flip.fromScale);
+  assert.equal(flipIn(moves[1], 0), 0);
+  const end = MOTION.flip.fadeDelay + MOTION.flip.fade;
+  assert.equal(flipShift(moves[1], end, "y"), 0);
+  assert.equal(flipScale(moves[1], end), 1);
+  assert.equal(flipIn(moves[1], end), 1);
+  // No move: drawn in place.
+  assert.equal(flipShift(undefined, 0, "x"), 0);
+  assert.equal(flipIn(undefined, 0), 1);
+});
+
+test("FLIP keys: the same app as a tile on home and in results is the same entry", () => {
+  const home = layoutHome(HOME).entries[3];
+  const result = { kind: "tile" as const, item: home.item };
+  assert.equal(flipKey(home), flipKey(result));
+  assert.notEqual(flipKey(home), flipKey({ kind: "pill", item: home.item }));
 });

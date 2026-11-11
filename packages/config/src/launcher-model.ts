@@ -815,3 +815,222 @@ export function repeatsDue(elapsedMs: number, delayMs: number, ratePerSecond: nu
   const distance = t <= 1000 ? t + (t * t) / 2000 : 1500 + 2 * (t - 1000);
   return 1 + Math.floor((ratePerSecond * distance) / 1000);
 }
+
+// ---------------------------------------------------------------- motion
+
+/**
+ * The motion of the approved mock, "Subtle" setting
+ * (shojiwm-setup/docs/research/launcher-mockup/motion.html). All times are
+ * in ms. The animation clocks in ./launcher.tsx count these ms, so a debug
+ * slow-down stretches the clock and not these numbers.
+ */
+export const MOTION = {
+  /** The selection ring: the leading edge, the trailing edge. */
+  glide: { lead: 110, trail: 190 },
+  /** The tiles on open: each row rises over `row`, all within `total` (the panel fades in meanwhile). */
+  cascade: { total: 180, row: 120, rise: 8 },
+  /** Results while typing: slide; a new one comes in over `fade` ms (the mock's name), after a short delay. */
+  flip: { move: 150, fade: 120, fadeDelay: 20, rise: 6, fromScale: 0.97 },
+  /** The panel: opens from 96% on a spring with a quick fade, closes to 97%. */
+  open: { spring: 260, zeta: 0.62, fade: 90, fromScale: 0.96, close: 110, closeScale: 0.97 },
+  /** A press: in to 0.94, held 100 ms at least, a spring back. */
+  press: { in: 60, hold: 100, out: 260, zeta: 0.55, scale: 0.94, ripple: 340 },
+  /** Hover: the icon lifts 2 px and grows about 6%. */
+  hover: { ms: 240, lift: 2, grow: 0.06 },
+} as const;
+
+/**
+ * The times the launcher really uses, where they differ from MOTION. In
+ * ShojiWM anything that moves inside the panel lays the whole panel out
+ * again on every frame (about 15 ms here, so those frames come late). The
+ * old launcher already paid that for its open (120 ms), its hover grow
+ * (120 ms) and its press spring (220 ms); these keep the new motion inside
+ * the same time, so it adds no late frames. The ring glide and the ripple
+ * are drawn by a shader and cost nothing like that.
+ */
+export const BUDGET = {
+  /** The open spring is stopped here: it is within a pixel of rest by then. */
+  open: 150,
+  /** The cascade fits inside the open. */
+  cascade: { total: 150, row: 100 },
+  hover: 120,
+  pressOut: 220,
+} as const;
+
+export const clamp01 =(value: number) => (value <= 0 ? 0 : value >= 1 ? 1 : value);
+export const outCubic = (t: number) => 1 - (1 - t) ** 3;
+
+/**
+ * A damped spring from 0 to 1 at `t` (0..1 of its duration), as the mock
+ * samples it: it passes 1, swings back a little, and is exactly 1 at the end.
+ */
+export function springAt(t: number, zeta: number): number {
+  if (t <= 0) {
+    return 0;
+  }
+  if (t >= 1) {
+    return 1;
+  }
+  const w = 6.5 / zeta;
+  const wd = w * Math.sqrt(1 - zeta * zeta);
+  return 1 - Math.exp(-zeta * w * t) * (Math.cos(wd * t) + ((zeta * w) / wd) * Math.sin(wd * t));
+}
+
+/**
+ * How many whole px an icon of `size` px grows by `factor`: an even number,
+ * so it grows the same on each side and stays on whole pixels (sharp).
+ */
+export function evenGrowPx(size: number, factor: number): number {
+  return 2 * Math.round((size * factor) / 2);
+}
+
+/** The scale of a hovered tile icon of `size` px: about 1.06, on whole pixels. */
+export const hoverIconScale = (size: number) => 1 + evenGrowPx(size, MOTION.hover.grow) / size;
+
+// ------------------------------------------------ the gliding selection
+
+export interface Edges {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+}
+
+/** One edge of the ring: it goes from `from` to `to`, starting at `start` ms. */
+export interface GlideEdge {
+  from: number;
+  to: number;
+  start: number;
+  duration: number;
+}
+
+export type Glide = Record<keyof Edges, GlideEdge>;
+
+const EDGE_NAMES = ["left", "top", "right", "bottom"] as const;
+
+/** Where one edge is at `now` ms (the glide clock). */
+export function glideEdgeAt(edge: GlideEdge, now: number, ease: (t: number) => number = outCubic): number {
+  const t = clamp01((now - edge.start) / edge.duration);
+  return edge.from + (edge.to - edge.from) * ease(t);
+}
+
+export function glideAt(glide: Glide, now: number, ease?: (t: number) => number): Edges {
+  return {
+    left: glideEdgeAt(glide.left, now, ease),
+    top: glideEdgeAt(glide.top, now, ease),
+    right: glideEdgeAt(glide.right, now, ease),
+    bottom: glideEdgeAt(glide.bottom, now, ease),
+  };
+}
+
+/** The ring sits on `target` at once. */
+export function glideJump(target: Edges, now: number): Glide {
+  const edge = (value: number): GlideEdge => ({ from: value, to: value, start: now, duration: 1 });
+  return { left: edge(target.left), top: edge(target.top), right: edge(target.right), bottom: edge(target.bottom) };
+}
+
+/**
+ * Send the ring to `target` from wherever it is at `now`. The edge in front
+ * (the one moving away from the box) takes `lead` ms, the edge behind
+ * `trail` ms, so the ring stretches a little while it moves. An edge that
+ * already goes to its target keeps going; nothing jumps when keys repeat.
+ */
+export function glideTo(glide: Glide, target: Edges, now: number, lead: number, trail: number): Glide {
+  const next = { ...glide };
+  for (const name of EDGE_NAMES) {
+    const edge = glide[name];
+    const to = target[name];
+    if (to === edge.to) {
+      continue;
+    }
+    const at = glideEdgeAt(edge, now);
+    const leads = name === "left" || name === "top" ? to < at : to > at;
+    next[name] = { from: at, to, start: now, duration: leads ? lead : trail };
+  }
+  return next;
+}
+
+/** When the last edge arrives, on the glide clock. */
+export function glideEnd(glide: Glide): number {
+  return Math.max(...EDGE_NAMES.map((name) => glide[name].start + glide[name].duration));
+}
+
+// ------------------------------------------------ the cascade on open
+
+/**
+ * The row of each top, for the cascade: 0 for the highest top, then 1, ...
+ * (section titles count as rows too).
+ */
+export function cascadeRows(tops: readonly number[]): Map<number, number> {
+  const sorted = [...new Set(tops)].sort((a, b) => a - b);
+  return new Map(sorted.map((top, row) => [top, row]));
+}
+
+/**
+ * How far row `row` of `rows` is into its fade-in, `now` ms after the open
+ * (0..1, before any easing). The rows start one after the other so that
+ * the last one ends at `total`.
+ */
+export function cascadeAt(now: number, row: number, rows: number, total: number, duration: number): number {
+  const stagger = rows > 1 ? Math.max(0, total - duration) / (rows - 1) : 0;
+  return clamp01((now - row * stagger) / duration);
+}
+
+// ------------------------------------------------ results glide (FLIP)
+
+/** Where an entry starts: `dx`, `dy` from its new place, or `fresh` (comes in). */
+export interface FlipMove {
+  dx: number;
+  dy: number;
+  fresh: boolean;
+}
+
+/** What makes two entries "the same" across a change: the kind and the item. */
+export const flipKey = (entry: Pick<Entry, "kind" | "item">) => `${entry.kind}:${entry.item.id}`;
+
+/**
+ * FLIP: for each new entry, the offset from where the same entry was drawn
+ * before (`before`, by flipKey) to its new place; an entry that was not
+ * there comes in (rises and grows). `before` holds where they were on screen, so a change in
+ * the middle of a glide starts from the current spot, with no jump.
+ */
+export function flipMoves(
+  before: ReadonlyMap<string, { x: number; y: number }>,
+  after: readonly { key: string; x: number; y: number }[],
+): FlipMove[] {
+  const used = new Set<string>();
+  return after.map(({ key, x, y }) => {
+    const old = before.get(key);
+    if (!old || used.has(key)) {
+      return { dx: 0, dy: 0, fresh: true };
+    }
+    used.add(key);
+    return { dx: old.x - x, dy: old.y - y, fresh: false };
+  });
+}
+
+/** The share of a FLIP move done at `now` (0..1, before easing). */
+export const flipMoveAt = (now: number) => clamp01(now / MOTION.flip.move);
+/** The share of a coming-in done at `now` (0..1, before easing). */
+export const flipFadeAt = (now: number) => clamp01((now - MOTION.flip.fadeDelay) / MOTION.flip.fade);
+
+// Where a moved or fresh entry is drawn `now` ms into the glide. They return
+// plain numbers (no object per frame): the offset from its place along x or
+// y, its scale, and how far in it is (0 to 1; 1 for one that moves).
+export function flipShift(move: FlipMove | undefined, now: number, axis: "x" | "y", ease: (t: number) => number = outCubic): number {
+  if (!move) {
+    return 0;
+  }
+  if (move.fresh) {
+    return axis === "y" ? MOTION.flip.rise * (1 - ease(flipFadeAt(now))) : 0;
+  }
+  return (axis === "x" ? move.dx : move.dy) * (1 - ease(flipMoveAt(now)));
+}
+
+export function flipScale(move: FlipMove | undefined, now: number, ease: (t: number) => number = outCubic): number {
+  return move?.fresh ? MOTION.flip.fromScale + (1 - MOTION.flip.fromScale) * ease(flipFadeAt(now)) : 1;
+}
+
+export function flipIn(move: FlipMove | undefined, now: number, ease: (t: number) => number = outCubic): number {
+  return move?.fresh ? ease(flipFadeAt(now)) : 1;
+}

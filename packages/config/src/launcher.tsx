@@ -38,6 +38,7 @@ import {
   createPoll,
   cubicBezier,
   dualKawaseBlur,
+  effect,
   loadShader,
   outputLogicalSize,
   paintShader,
@@ -65,9 +66,28 @@ import {
   HEADER_X,
   LIGHT_BUTTON,
   LIGHT_PITCH,
+  BUDGET,
+  MOTION,
+  cascadeAt,
+  cascadeRows,
+  clamp01,
+  hoverIconScale,
+  flipKey,
+  flipMoves,
+  flipIn,
+  flipScale,
+  flipShift,
+  glideEdgeAt,
+  glideEnd,
+  glideJump,
+  glideTo,
   glowSize,
   hoverGrow,
   lightSize,
+  springAt,
+  type Edges,
+  type FlipMove,
+  type Glide,
   MAX_RESULT_TILES,
   NOTE_HEIGHT,
   PANEL_HEIGHT,
@@ -178,23 +198,36 @@ const CONTEXT_WIDTH = px(140);
 
 // ---------------------------------------------------------------- motion
 
-/** Opening and closing: a quick fade with a scale from 0.97. */
-const OPEN_MS = 120;
-const OPEN_FADE_SHARE = 0.09 / 0.12;
-const OPEN_FROM_SCALE = 0.97;
-const OPEN_EASING = cubicBezier(0.2, 0.8, 0.2, 1);
+// The approved motion mock, Subtle setting (MOTION in ./launcher-model.ts).
+// What moves goes by animation clocks: an animation variable that counts
+// the ms of one motion, read by small computeds that return plain numbers.
+/**
+ * Opening: from 96% on a spring, with a quick fade. The spring is settled
+ * to well under a pixel after OPEN_RUN_MS, so the clock stops there and the
+ * panel sits at exactly 100%.
+ */
+const OPEN_RUN_MS = BUDGET.open;
 const FADE_EASING = cubicBezier(0, 0, 0.58, 1);
-/** Hover grows in 200 ms with soft ends (as the traffic lights). */
+/** Closing: shrink to 97% and fade, with a soft start. */
+const CLOSE_EASING = cubicBezier(0.4, 0, 1, 1);
+/** The mock's ease for the cascade, the results glide and the ripple. */
+const SOFT_OUT = cubicBezier(0.2, 0.8, 0.2, 1);
+/** The FLIP clock runs until the last new entry is in place. */
+const FLIP_RUN_MS = Math.max(MOTION.flip.move, MOTION.flip.fadeDelay + MOTION.flip.fade);
+/** The selection ring fades when it leaves the tiles for the bottom row. */
+const RING_FADE_MS = 120;
+/** Hover of the lights and the avatar: 200 ms with soft ends (as the traffic lights). */
 const HOVER_MS = 200;
 const HOVER_EASING = cubicBezier(0.4, 0, 0.2, 1);
-/** A tile's icon grows 1.08x under the pointer (the mock's 120 ms). */
-const TILE_HOVER_MS = 120;
-const TILE_HOVER_EASING = cubicBezier(0.2, 0.8, 0.2, 1);
-/** A press pushes in at once, holds at least 100 ms, then springs back. */
-const PRESS_IN_MS = 60;
-const PRESS_HOLD_MS = 100;
-const SPRING_MS = 220;
-const SPRING = cubicBezier(0.34, 1.56, 0.64, 1);
+/** A tile's icon lifts 2 px and grows a little under the pointer, on a spring. */
+const TILE_HOVER_EASING = cubicBezier(0.34, 1.56, 0.64, 1);
+const TILE_ICON_GROW = hoverIconScale(TILE_ICON);
+/** A press pushes in to 0.94, holds at least 100 ms, then springs back. */
+const PRESS_DEPTH = 1 - MOTION.press.scale;
+const PRESS_EASING = cubicBezier(0.4, 0, 0.2, 1);
+const PRESS_SPRING = (t: number) => springAt(t, MOTION.press.zeta);
+/** A result row is wide: it presses in less (to 0.97). */
+const ROW_PRESS_DEPTH = 0.03;
 const CARET_BLINK_MS = 530;
 /** Milliseconds for the speed numbers (`performance` may be missing here). */
 const clock = (): number =>
@@ -376,21 +409,76 @@ export function createLauncher(options: LauncherOptions): Launcher {
 
   // ------------------------------------------------------------ animation
 
-  const OPEN = animationVariable("launcher.open");
-  const openValue = computed(() => host()?.animation.variable(OPEN)() ?? 0);
-  const openOpacity = computed(() => FADE_EASING(Math.min(1, openValue() / OPEN_FADE_SHARE)));
-  const openScale = computed(() => OPEN_FROM_SCALE + (1 - OPEN_FROM_SCALE) * OPEN_EASING(openValue()));
+  /** Debug: every motion runs this many times slower (to see mid-motion frames). */
+  let slow = 1;
+  /**
+   * The results glide while typing (FLIP). It is built, but off: each glide
+   * lays the panel out on every frame for 170 ms, so typing had about 3x
+   * the late frames (11 Nov 2026: 587 against 200). Turn it on with
+   * debug.launcher {flip: true}, or here, once ShojiWM can move a node
+   * without a new layout of the whole panel.
+   */
+  let flipOn = false;
+  /** The hover time of a tile (debug.launcher {hoverMs} for A/B tests). */
+  let tileHoverMs: number = BUDGET.hover;
+
+  /**
+   * A motion clock: an animation variable that counts the ms of one motion
+   * (the mock's ms; `slow` stretches the real time only).
+   */
+  interface Clock {
+    variable: AnimationVariable;
+    value: ReadonlySignal<number>;
+  }
+  const clockVar = (name: string): Clock => {
+    const variable = animationVariable(name);
+    return { variable, value: computed(() => host()?.animation.variable(variable)() ?? 0) };
+  };
+  /** Play `clock` from `from` to `to` ms, in real time. */
+  const runClock = (clock: Clock, from: number, to: number): Promise<boolean> =>
+    host.peek()?.animation.start(clock.variable, { from, to, duration: Math.max(1, (to - from) * slow) }) ??
+    Promise.resolve(false);
+
+  // Open and close. One clock counts the ms since the open started (it also
+  // drives the cascade of the tiles), one the ms since the close started.
+  // Each starts from the panel's look at that moment, so a close in the
+  // middle of an open (or the other way round) does not jump.
+  const OPEN_CLOCK = clockVar("launcher.open");
+  const CLOSE_CLOCK = clockVar("launcher.close");
+  const [opening, setOpening] = signal(false);
+  const [openFrom, setOpenFrom] = signal<{ scale: number; opacity: number; closeMs: number }>({
+    scale: MOTION.open.fromScale,
+    opacity: 0,
+    closeMs: MOTION.open.close,
+  });
+  const openScale = computed(() => {
+    const from = openFrom();
+    if (opening()) {
+      const t = OPEN_CLOCK.value();
+      const spring = t >= OPEN_RUN_MS ? 1 : springAt(t / MOTION.open.spring, MOTION.open.zeta);
+      return from.scale + (1 - from.scale) * spring;
+    }
+    const t = clamp01(CLOSE_CLOCK.value() / from.closeMs);
+    return from.scale + (MOTION.open.closeScale - from.scale) * CLOSE_EASING(t);
+  });
+  const openOpacity = computed(() => {
+    const from = openFrom();
+    if (opening()) {
+      return from.opacity + (1 - from.opacity) * FADE_EASING(clamp01(OPEN_CLOCK.value() / MOTION.open.fade));
+    }
+    return from.opacity * (1 - CLOSE_EASING(clamp01(CLOSE_CLOCK.value() / from.closeMs)));
+  });
 
   const anim = (name: string): Anim => {
     const variable = animationVariable(name);
     return { variable, value: computed(() => host()?.animation.variable(variable)() ?? 0), pressedAt: 0 };
   };
   const animate = (target: Anim, to: number, duration: number, easing: (t: number) => number) => {
-    void host.peek()?.animation.start(target.variable, { to, duration, easing });
+    void host.peek()?.animation.start(target.variable, { to, duration: duration * slow, easing });
   };
   const hoverAnim = (target: Anim | undefined, on: boolean, tile = false) => {
     if (target) {
-      animate(target, on ? 1 : 0, tile ? TILE_HOVER_MS : HOVER_MS, tile ? TILE_HOVER_EASING : HOVER_EASING);
+      animate(target, on ? 1 : 0, tile ? tileHoverMs : HOVER_MS, tile ? TILE_HOVER_EASING : HOVER_EASING);
     }
   };
   /** A light's or the avatar's glow: in 130 ms, out 250 ms, as the orb. */
@@ -404,17 +492,17 @@ export function createLauncher(options: LauncherOptions): Launcher {
       return;
     }
     target.pressedAt = Date.now();
-    animate(target, 1, PRESS_IN_MS, HOVER_EASING);
+    animate(target, 1, MOTION.press.in, PRESS_EASING);
   };
   /** Spring back, no sooner than 100 ms after the press. Resolves when it starts. */
   const pressOut = (target: Anim | undefined): Promise<void> => {
     if (!target) {
       return Promise.resolve();
     }
-    const wait = Math.max(0, PRESS_HOLD_MS - (Date.now() - target.pressedAt));
+    const wait = Math.max(0, MOTION.press.hold * slow - (Date.now() - target.pressedAt));
     return new Promise((resolve) => {
       setTimeout(() => {
-        animate(target, 0, SPRING_MS, SPRING);
+        animate(target, 0, BUDGET.pressOut, PRESS_SPRING);
         resolve();
       }, wait);
     });
@@ -510,6 +598,334 @@ export function createLauncher(options: LauncherOptions): Launcher {
         return {};
     }
   };
+
+  // ------------------------------------------------------------ motion
+
+  // The cascade on open: each row of the home page (its title too) rises
+  // 8 px into place, one row after the other, while the panel fades in. (A
+  // fade of each row is not possible: ShojiWM draws an image with no
+  // opacity of its own, and does not show a change of a label's opacity.)
+  // It only changes how the tiles are drawn: keys and typing work at once.
+  const HOME_SHAPE = layoutHome({
+    recommended: Array.from({ length: 16 }, () => FALLBACK_APPS[0]),
+    pinned: Array.from({ length: HOME_TILES - 16 }, () => FALLBACK_APPS[0]),
+  });
+  const CASCADE_ROWS = cascadeRows([...HOME_SHAPE.headers.map((header) => header.y), ...HOME_SHAPE.entries.map((entry) => entry.y)]);
+  const cascadeRowShown = Array.from({ length: CASCADE_ROWS.size }, (_, row) =>
+    computed(() =>
+      opening()
+        ? SOFT_OUT(cascadeAt(OPEN_CLOCK.value(), row, CASCADE_ROWS.size, BUDGET.cascade.total, BUDGET.cascade.row))
+        : 1,
+    ),
+  );
+  /** How far into its rise (0..1) the home row at body y `top` is. */
+  const cascadeOf = (top: number) => cascadeRowShown[CASCADE_ROWS.get(top) ?? 0];
+
+  // The selection ring: drawn by one paint shader over the panel
+  // (./effect/launcher-motion.frag), so it moves by uniforms only, with no
+  // new layout. It glides from entry to entry, the leading edge fast and the
+  // trailing edge slower, and takes a new target mid-flight with no jump.
+  const GLIDE_CLOCK = clockVar("launcher.glide");
+  const RING_ALPHA = anim("launcher.ring.alpha");
+  let glide: Glide = glideJump({ left: 0, top: 0, right: 0, bottom: 0 }, 0);
+  let ringOn = false;
+  /** The next ring move is a jump (after an open). */
+  let ringJump = true;
+  const [glideVersion, setGlideVersion] = signal(0);
+  const [ringRadius, setRingRadius] = signal(TILE_RADIUS);
+  const ringEdge = (name: keyof Edges) =>
+    computed(() => {
+      glideVersion();
+      return glideEdgeAt(glide[name], GLIDE_CLOCK.value());
+    });
+  const ringLeft = ringEdge("left");
+  const ringTop = ringEdge("top");
+  const ringRight = ringEdge("right");
+  const ringBottom = ringEdge("bottom");
+  /** The slot of the selected entry: the ring presses and rises with it. */
+  const selectedSlot = computed(() => {
+    const index = selected();
+    const pools = typing() ? [resultTiles, resultRows, resultPills] : [homeTiles];
+    for (const pool of pools) {
+      for (const slot of pool) {
+        if (slot.placed()?.index === index) {
+          return slot;
+        }
+      }
+    }
+    return undefined;
+  });
+  const ringPress = computed(() => {
+    const slot = selectedSlot();
+    const depth = slot?.placed()?.entry.kind === "tile" ? PRESS_DEPTH : ROW_PRESS_DEPTH;
+    return slot ? 1 - depth * slot.press.value() : 1;
+  });
+  const ringCascade = computed(() => {
+    const entry = typing() ? undefined : selectedSlot()?.placed()?.entry;
+    return entry ? cascadeOf(entry.y)() : 1;
+  });
+  const ringRect = [
+    computed(() => (ringLeft() + ringRight()) / 2 + ((ringLeft() - ringRight()) / 2) * ringPress()),
+    computed(() => (ringTop() + ringBottom()) / 2 + ((ringTop() - ringBottom()) / 2) * ringPress() + MOTION.cascade.rise * (1 - ringCascade())),
+    computed(() => (ringLeft() + ringRight()) / 2 + ((ringRight() - ringLeft()) / 2) * ringPress()),
+    computed(() => (ringTop() + ringBottom()) / 2 + ((ringBottom() - ringTop()) / 2) * ringPress() + MOTION.cascade.rise * (1 - ringCascade())),
+  ] as const;
+  const ringAlpha = computed(() => RING_ALPHA.value() * ringCascade());
+
+  /** Where the selected entry is, in panel px; null when the ring has nowhere to be. */
+  const ringTarget = (): (Edges & { radius: number }) | null => {
+    const target = targetOf(selected.peek());
+    const entry = target?.kind === "entry" ? layout.peek().entries[target.index] : undefined;
+    if (!entry) {
+      return null;
+    }
+    const top = BODY.y + entry.y - (typing.peek() ? scroll.peek() : 0);
+    return {
+      left: entry.x,
+      top,
+      right: entry.x + entry.width,
+      bottom: top + entry.height,
+      radius: entry.kind === "tile" ? TILE_RADIUS : 999,
+    };
+  };
+  const syncRing = () => {
+    if (!isOpen.peek() || closing) {
+      return;
+    }
+    const target = ringTarget();
+    const now = GLIDE_CLOCK.value.peek();
+    if (!target) {
+      // On the bottom row (the lights draw their own hover): fade out.
+      if (ringOn) {
+        ringOn = false;
+        animate(RING_ALPHA, 0, RING_FADE_MS, OUT_CUBIC);
+      }
+      return;
+    }
+    setRingRadius(target.radius);
+    if (!ringOn || ringJump) {
+      glide = glideJump(target, now);
+      setGlideVersion((version) => version + 1);
+      if (ringJump) {
+        host.peek()?.animation.set(RING_ALPHA.variable, 1);
+      } else {
+        animate(RING_ALPHA, 1, RING_FADE_MS, OUT_CUBIC);
+      }
+      ringOn = true;
+      ringJump = false;
+      return;
+    }
+    const next = glideTo(glide, target, now, MOTION.glide.lead, MOTION.glide.trail);
+    if (next.left === glide.left && next.top === glide.top && next.right === glide.right && next.bottom === glide.bottom) {
+      return;
+    }
+    glide = next;
+    setGlideVersion((version) => version + 1);
+    void runClock(GLIDE_CLOCK, now, glideEnd(glide));
+  };
+
+  // Results glide while typing (FLIP): when the entries change, each one
+  // that was on screen before slides from where it was drawn to its new
+  // place, and a new one rises 6 px into place while it grows from 97%. A
+  // change in the middle of a glide starts from where things are drawn at
+  // that moment. (Nothing fades: see the cascade. So one that goes away
+  // leaves at once.)
+  const FLIP_CLOCK = clockVar("launcher.flip");
+  let flipShown: { layout: Layout; offset: number } | null = null;
+  let moves: (FlipMove | undefined)[] = [];
+  let headerMoves: (FlipMove | undefined)[] = [];
+  const [flipVersion, setFlipVersion] = signal(0);
+  const onScreen = (y: number, height: number) => y + height > 0 && y < BODY.height;
+  const resetFlip = () => {
+    flipShown = null;
+    moves = [];
+    headerMoves = [];
+    setFlipVersion((version) => version + 1);
+  };
+  /** Where things of `move` are drawn now, from the place `x`, `y`. */
+  const drawnAt = (move: FlipMove | undefined, now: number, x: number, y: number) => ({
+    x: x + flipShift(move, now, "x", SOFT_OUT),
+    y: y + flipShift(move, now, "y", SOFT_OUT),
+  });
+  const syncFlip = () => {
+    const next = layout.peek();
+    const offset = typing.peek() ? scroll.peek() : 0;
+    const previous = flipShown;
+    flipShown = { layout: next, offset };
+    if (!previous || previous.layout === next || !isOpen.peek() || closing || !flipOn) {
+      return;
+    }
+    const now = FLIP_CLOCK.value.peek();
+    const before = new Map<string, { x: number; y: number }>();
+    previous.layout.entries.forEach((entry, index) => {
+      const key = flipKey(entry);
+      const y = entry.y - previous.offset;
+      const move = moves[index];
+      // One that has barely started to come in comes in again.
+      if (before.has(key) || !onScreen(y, entry.height) || flipIn(move, now, SOFT_OUT) < 0.5) {
+        return;
+      }
+      before.set(key, drawnAt(move, now, entry.x, y));
+    });
+    const headersBefore = new Map<string, { x: number; y: number }>();
+    previous.layout.headers.forEach((header, index) => {
+      const y = header.y - previous.offset;
+      if (onScreen(y, HEADER_LINE)) {
+        headersBefore.set(header.text, drawnAt(headerMoves[index], now, 0, y));
+      }
+    });
+    moves = flipMoves(before, next.entries.map((entry) => ({ key: flipKey(entry), x: entry.x, y: entry.y - offset })));
+    headerMoves = flipMoves(headersBefore, next.headers.map((header) => ({ key: header.text, x: 0, y: header.y - offset })));
+    setFlipVersion((version) => version + 1);
+    void runClock(FLIP_CLOCK, 0, FLIP_RUN_MS);
+  };
+  /** How the entry in `slot` is drawn during a glide (no object per frame). */
+  const flipOf = (move: ReadonlySignal<FlipMove | undefined>) => ({
+    x: computed(() => {
+      const value = move();
+      return value ? flipShift(value, FLIP_CLOCK.value(), "x", SOFT_OUT) : 0;
+    }),
+    y: computed(() => {
+      const value = move();
+      return value ? flipShift(value, FLIP_CLOCK.value(), "y", SOFT_OUT) : 0;
+    }),
+    scale: computed(() => {
+      const value = move();
+      return value ? flipScale(value, FLIP_CLOCK.value(), SOFT_OUT) : 1;
+    }),
+  });
+  /** The move of the entry a slot draws (home slots only on the home page, and so on). */
+  const slotMove = (slot: Slot, results: boolean) =>
+    computed(() => {
+      flipVersion();
+      const placed = slot.placed();
+      return placed && typing() === results ? moves[placed.index] : undefined;
+    });
+
+  // Both follow the layout, the selection and the scroll, once per change
+  // (after all the signals of a key have been set).
+  let motionQueued = false;
+  effect(() => {
+    layout();
+    selected();
+    scroll();
+    if (!motionQueued) {
+      motionQueued = true;
+      queueMicrotask(() => {
+        motionQueued = false;
+        syncFlip();
+        syncRing();
+      });
+    }
+  });
+
+  // The press ripple: a soft light circle that grows from the click point
+  // (the middle, for Enter), clipped to the pressed tile's, row's or light's
+  // rounded shape inside the same shader. It presses in with its button.
+  const RIPPLE_CLOCK = clockVar("launcher.ripple");
+  interface RippleShape {
+    x: number;
+    y: number;
+    reach: number;
+    box: Edges;
+    corner: number;
+    scale: ReadonlySignal<number>;
+  }
+  const [rippleShape, setRippleShape] = signal<RippleShape | null>(null);
+  const lightGrow = POWER.map((_, k) =>
+    computed(() => 1 + hoverGrow(lightSize(k)) * lights[k].hover.value() - PRESS_DEPTH * lights[k].press.value()),
+  );
+  const avatarGrow = computed(() => 1 + hoverGrow(ACCOUNT.avatar) * account.hover.value() - PRESS_DEPTH * account.press.value());
+  const accountScale = account.press.value((value) => 1 - 0.05 * value);
+  const lightBox = (k: number): Edges => {
+    const size = lightSize(k);
+    const left = FIRST_LIGHT_X + k * LIGHT_PITCH + Math.round((LIGHT_BUTTON - size) / 2);
+    const top = POWER_Y + Math.round((LIGHT_BUTTON - size) / 2);
+    return { left, top, right: left + size, bottom: top + size };
+  };
+  const rippleShapeOf = (target: Target): Omit<RippleShape, "x" | "y" | "reach"> | null => {
+    switch (target.kind) {
+      case "entry": {
+        const entry = layout.peek().entries[target.index];
+        const slot = slotOf(target.index);
+        if (!entry || !slot) {
+          return null;
+        }
+        const top = BODY.y + entry.y - (typing.peek() ? scroll.peek() : 0);
+        const depth = entry.kind === "tile" ? PRESS_DEPTH : ROW_PRESS_DEPTH;
+        return {
+          box: { left: entry.x, top, right: entry.x + entry.width, bottom: top + entry.height },
+          corner: entry.kind === "tile" ? TILE_RADIUS : entry.height / 2,
+          scale: slot.press.value((value) => 1 - depth * value),
+        };
+      }
+      case "light":
+        return { box: lightBox(target.index), corner: lightSize(target.index) / 2, scale: lightGrow[target.index] };
+      case "account":
+        return {
+          box: { left: ACCOUNT.x, top: ACCOUNT.y, right: ACCOUNT.x + ACCOUNT.width, bottom: ACCOUNT.y + ACCOUNT.height },
+          corner: ACCOUNT.height / 2,
+          scale: accountScale,
+        };
+      default:
+        return null;
+    }
+  };
+  /** `point` is in panel px; none starts it in the middle. */
+  const startRipple = (target: Target, point?: { x: number; y: number }) => {
+    const shape = rippleShapeOf(target);
+    if (!shape) {
+      return;
+    }
+    const { box } = shape;
+    const x = point ? Math.min(box.right, Math.max(box.left, point.x)) : (box.left + box.right) / 2;
+    const y = point ? Math.min(box.bottom, Math.max(box.top, point.y)) : (box.top + box.bottom) / 2;
+    const reach = Math.hypot(Math.max(x - box.left, box.right - x), Math.max(y - box.top, box.bottom - y));
+    setRippleShape({ ...shape, x, y, reach });
+    void runClock(RIPPLE_CLOCK, 0, MOTION.press.ripple);
+  };
+  const rippleT = computed(() => clamp01(RIPPLE_CLOCK.value() / MOTION.press.ripple));
+  /** The ripple's centre along x or y, pressed in with its button. */
+  const rippleAxis = (axis: "x" | "y") =>
+    computed(() => {
+      const shape = rippleShape();
+      if (!shape) {
+        return 0;
+      }
+      const middle = axis === "x" ? (shape.box.left + shape.box.right) / 2 : (shape.box.top + shape.box.bottom) / 2;
+      return middle + (shape[axis] - middle) * shape.scale();
+    });
+  const rippleEdge = (name: keyof Edges) =>
+    computed(() => {
+      const shape = rippleShape();
+      if (!shape) {
+        return 0;
+      }
+      const horizontal = name === "left" || name === "right";
+      const middle = horizontal ? (shape.box.left + shape.box.right) / 2 : (shape.box.top + shape.box.bottom) / 2;
+      return middle + (shape.box[name] - middle) * shape.scale();
+    });
+  const rippleUniform = [
+    rippleAxis("x"),
+    rippleAxis("y"),
+    computed(() => {
+      const shape = rippleShape();
+      return shape ? shape.reach * shape.scale() * (0.12 + 0.88 * SOFT_OUT(rippleT())) : 0;
+    }),
+    // As the mock: 1 to 0.9 in the first 40% (eased), then down to 0.
+    computed(() => {
+      const t = rippleT();
+      if (!rippleShape() || t >= 1) {
+        return 0;
+      }
+      return t < 0.4 ? 1 - 0.1 * SOFT_OUT(t / 0.4) : 0.9 * (1 - (t - 0.4) / 0.6);
+    }),
+  ] as const;
+  const rippleClip = [rippleEdge("left"), rippleEdge("top"), rippleEdge("right"), rippleEdge("bottom")] as const;
+  const rippleCorner = computed(() => {
+    const shape = rippleShape();
+    return shape ? shape.corner * shape.scale() : 0;
+  });
 
   // ------------------------------------------------------------ IPC
 
@@ -651,7 +1067,10 @@ export function createLauncher(options: LauncherOptions): Launcher {
     switch (kind) {
       case "exec":
         spawn(["sh", "-c", stripFieldCodes(value)]);
-        ipc.broadcast("launcher.used", { appId: item.id });
+        // A test's dry run must not count as a use (it would reorder Recommended).
+        if (!dryRun) {
+          ipc.broadcast("launcher.used", { appId: item.id });
+        }
         break;
       case "open":
       case "url":
@@ -673,6 +1092,7 @@ export function createLauncher(options: LauncherOptions): Launcher {
   const activate = (target: Target) => {
     const { press } = animOf(target);
     pressIn(press);
+    startRipple(target);
     let run: (() => void) | null = null;
     if (target.kind === "entry") {
       const entry = layout.peek().entries[target.index];
@@ -854,6 +1274,7 @@ export function createLauncher(options: LauncherOptions): Launcher {
       pressed = target;
       hideTip();
       pressIn(animOf(target).press);
+      startRipple(target, toPanel(event.position.x, event.position.y));
       return;
     }
     // Released.
@@ -1085,6 +1506,16 @@ export function createLauncher(options: LauncherOptions): Launcher {
       return;
     }
     note({ open: source ?? "", output: output.name });
+    // From the panel's look now: hidden, or part way through a close.
+    const wasShown = shown.peek();
+    setOpenFrom({
+      scale: wasShown ? openScale.peek() : MOTION.open.fromScale,
+      opacity: wasShown ? openOpacity.peek() : 0,
+      closeMs: MOTION.open.close,
+    });
+    setOpening(true);
+    resetFlip();
+    ringJump = true;
     closing = false;
     superDown = false;
     pressed = null;
@@ -1101,8 +1532,7 @@ export function createLauncher(options: LauncherOptions): Launcher {
     if (source !== "orb") {
       pulseOrb();
     }
-    const from = openValue.peek();
-    void window.animation.start(OPEN, { from, to: 1, duration: Math.max(1, OPEN_MS * (1 - from)) });
+    void runClock(OPEN_CLOCK, 0, OPEN_RUN_MS);
     grab = COMPOSITOR.input.grab({
       onKey,
       onPointerMotion,
@@ -1162,15 +1592,20 @@ export function createLauncher(options: LauncherOptions): Launcher {
       done();
       return;
     }
-    void window.animation
-      .start(OPEN, { to: 0, duration: Math.max(1, OPEN_MS * openValue.peek()) })
-      .then(done);
+    // Shrink to 97% and fade, from the look it has now (a close part way
+    // through the open is quicker).
+    const from = { scale: openScale.peek(), opacity: openOpacity.peek() };
+    const closeMs = Math.max(1, MOTION.open.close * from.opacity);
+    setOpenFrom({ ...from, closeMs });
+    setOpening(false);
+    void runClock(CLOSE_CLOCK, 0, closeMs).then(done);
   }
 
   // A real toggle (Super or the orb) ends any test's dry run. A dry run left on
   // stops the orb pulse and app launches.
   const toggle = (source?: string) => {
     dryRun = false;
+    slow = 1;
     return isOpen.peek() && !closing ? close(source) : open(source);
   };
   // A toggle that comes within 100 ms of the last one is the same click sent
@@ -1215,7 +1650,12 @@ export function createLauncher(options: LauncherOptions): Launcher {
       key?: string;
       shift?: boolean;
       ctrl?: boolean;
-      pointer?: { x: number; y: number; button?: "left" | "right"; panel?: boolean };
+      /** With `state`, only that half of a click (to hold a press). */
+      pointer?: { x: number; y: number; button?: "left" | "right"; panel?: boolean; state?: "pressed" | "released" };
+      slow?: number;
+      flip?: boolean;
+      hoverMs?: number;
+      replay?: "cascade";
       scroll?: number;
       hold?: string;
       ms?: number;
@@ -1226,6 +1666,25 @@ export function createLauncher(options: LauncherOptions): Launcher {
     };
     if (raw.dry !== undefined) {
       dryRun = raw.dry;
+    }
+    // A/B tests of what an effect costs: the results glide on or off, the
+    // hover time of a tile.
+    if (typeof raw.flip === "boolean") {
+      flipOn = raw.flip;
+    }
+    if (typeof raw.hoverMs === "number") {
+      tileHoverMs = raw.hoverMs;
+    }
+    // Slow motion, to see mid-motion frames: every motion takes `slow` times
+    // longer (1 is the real speed). A real toggle sets it back to 1.
+    if (typeof raw.slow === "number" && raw.slow >= 1) {
+      slow = raw.slow;
+    }
+    // Play the cascade again with the panel held still (a screenshot does not
+    // show the panel while it is scaled or faded).
+    if (raw.replay === "cascade" && isOpen.peek() && !closing) {
+      setOpenFrom({ scale: 1, opacity: 1, closeMs: MOTION.open.close });
+      void runClock(OPEN_CLOCK, 0, OPEN_RUN_MS);
     }
     if (raw.glass !== undefined) {
       setGlassOn(raw.glass);
@@ -1253,7 +1712,9 @@ export function createLauncher(options: LauncherOptions): Launcher {
       const rect = panelRect(outputRect.peek());
       const x = raw.pointer.panel ? rect.x + raw.pointer.x : raw.pointer.x;
       const y = raw.pointer.panel ? rect.y + raw.pointer.y : raw.pointer.y;
-      if (raw.pointer.button) {
+      if (raw.pointer.button && raw.pointer.state) {
+        onPointerButton({ position: { x, y }, state: raw.pointer.state, buttonName: raw.pointer.button });
+      } else if (raw.pointer.button) {
         onPointerButton({ position: { x, y }, state: "pressed", buttonName: raw.pointer.button });
         onPointerButton({ position: { x, y }, state: "released", buttonName: raw.pointer.button });
       } else {
@@ -1293,6 +1754,9 @@ export function createLauncher(options: LauncherOptions): Launcher {
       input: inputCounts,
       events,
       timing,
+      slow,
+      look: { opacity: openOpacity.peek(), scale: openScale.peek(), opening: opening.peek(), clock: OPEN_CLOCK.value.peek(), cascade: cascadeRowShown.map((row) => Math.round(row.peek() * 100) / 100) },
+      ring: { rect: ringRect.map((edge) => Math.round(edge.peek())), alpha: ringAlpha.peek(), target: glide.left.to + "," + glide.top.to, clock: GLIDE_CLOCK.value.peek() },
       panel: panelRect(outputRect.peek()),
     };
   });
@@ -1320,8 +1784,25 @@ export function createLauncher(options: LauncherOptions): Launcher {
       const target = hovered();
       return target?.kind === "entry" && target.index === slot.placed()?.index;
     });
-  /** The selection ring and the hover fill of a tile, row or pill. */
-  const Frame = ({ slot, width, height, radius }: { slot: Slot; width: number | ReadonlySignal<number>; height: number | ReadonlySignal<number>; radius: number }) => {
+  /**
+   * The hover fill of a tile, row or pill. Its selection ring is drawn by
+   * MOTION_PAINT (it glides), with the same border and glow, and the same
+   * 1 px border width here keeps the layout as it was.
+   */
+  const Frame = ({
+    slot,
+    width,
+    height,
+    radius,
+    scale,
+  }: {
+    slot: Slot;
+    width: number | ReadonlySignal<number>;
+    height: number | ReadonlySignal<number>;
+    radius: number;
+    /** The press, around the frame's middle. */
+    scale: ReadonlySignal<number>;
+  }) => {
     const sel = isSelected(slot);
     const hov = isHovered(slot);
     return (
@@ -1333,9 +1814,9 @@ export function createLauncher(options: LauncherOptions): Launcher {
           width,
           height,
           borderRadius: radius,
-          border: { px: 1, color: sel((on) => (on ? SELECTED_BORDER : NO_BORDER)) },
+          border: { px: 1, color: NO_BORDER },
           background: computed(() => (hov() && !sel() ? HOVER_FILL : "#00000000")),
-          boxShadow: sel((on) => (on ? SELECTED_GLOW : [])),
+          transform: { scale },
         }}
       />
     );
@@ -1360,6 +1841,33 @@ export function createLauncher(options: LauncherOptions): Launcher {
     return { top: atTop ? CLIP_ROOM : 0, bottom: atBottom ? CLIP_ROOM : 0 };
   });
 
+  /** "#rrggbbaa" as 0..1 floats, for a shader. */
+  const rgba = (hex: string) =>
+    [1, 3, 5, 7].map((at) => parseInt(hex.slice(at, at + 2), 16) / 255) as [number, number, number, number];
+  /**
+   * The selection ring and the press ripple (./effect/launcher-motion.frag),
+   * over the whole panel. The ring has the look a selected tile had: the
+   * SELECTED_BORDER 1 px border and the SELECTED_GLOW shadow, cut at the
+   * edges of the scroll area as the tiles are.
+   */
+  const MOTION_PAINT = paintShader("./src/effect/launcher-motion.frag", {
+    uniforms: {
+      ring_rect: ringRect,
+      ring_style: [ringRadius, ringAlpha, 1, SELECTED_GLOW[0].blur],
+      ring_clip: [
+        BODY.x,
+        clipRoom((room) => BODY.y - room.top),
+        BODY.x + BODY.width,
+        clipRoom((room) => BODY.y + BODY.height + room.bottom),
+      ],
+      ring_color: rgba(SELECTED_BORDER),
+      glow_color: rgba(SELECTED_GLOW[0].color),
+      ripple: rippleUniform,
+      ripple_clip: rippleClip,
+      ripple_corner: rippleCorner,
+    },
+  });
+
   const inView = (entry: Entry | undefined, home: boolean) => {
     if (!entry) {
       return false;
@@ -1379,6 +1887,8 @@ export function createLauncher(options: LauncherOptions): Launcher {
     top,
     size,
     scale,
+    lift,
+    shift,
     visible,
   }: {
     src: string | ReadonlySignal<string>;
@@ -1386,6 +1896,10 @@ export function createLauncher(options: LauncherOptions): Launcher {
     top: number | ReadonlySignal<number>;
     size: number;
     scale?: ReadonlySignal<number>;
+    /** Moves it up or down (px), without a new layout of its box. */
+    lift?: ReadonlySignal<number>;
+    /** Moves it left or right (px). */
+    shift?: ReadonlySignal<number>;
     visible?: ReadonlySignal<boolean>;
   }) => {
     const grow = (OVERSAMPLE - 1) / 2;
@@ -1400,14 +1914,34 @@ export function createLauncher(options: LauncherOptions): Launcher {
           width: size * OVERSAMPLE,
           height: size * OVERSAMPLE,
           visible,
-          transform: { scale: scale ? scale((value) => value / OVERSAMPLE) : 1 / OVERSAMPLE },
+          transform: {
+            scale: scale ? scale((value) => value / OVERSAMPLE) : 1 / OVERSAMPLE,
+            translateX: shift ?? 0,
+            translateY: lift ?? 0,
+          },
         }}
       />
     );
   };
 
+  /**
+   * A tile. Its outer box only moves: the cascade on open (a home tile
+   * rises 8 px) and the results glide (FLIP). The press (0.94) scales the
+   * frame and the icon each on its own, around the tile's middle; the icon
+   * also lifts 2 px and grows on hover. The label is never scaled: under a
+   * scale ShojiWM keeps a label's font size but shrinks its box, so the
+   * text gets cut with "...". It moves as if it were scaled.
+   */
   const Tile = ({ slot, fixed }: { slot: Slot; fixed?: { x: number; y: number } }) => {
     const item = computed(() => slot.placed()?.entry.item);
+    const flip = flipOf(slotMove(slot, !fixed));
+    const shown = fixed ? cascadeOf(fixed.y) : undefined;
+    const rise = shown ? computed(() => MOTION.cascade.rise * (1 - shown()) + flip.y()) : flip.y;
+    const press = computed(() => (1 - PRESS_DEPTH * slot.press.value()) * flip.scale());
+    /** How far a point at tile y `at` moves under the press, from the tile's middle. */
+    const shiftY = (at: number) => press((scale) => (at - TILE_HEIGHT / 2) * (scale - 1));
+    const iconShift = shiftY(TILE_ICON_TOP + TILE_ICON / 2);
+    const labelShift = shiftY(TILE_LABEL_TOP + TILE_LABEL_HEIGHT / 2);
     return (
       <Box
         style={{
@@ -1417,16 +1951,17 @@ export function createLauncher(options: LauncherOptions): Launcher {
           width: TILE_WIDTH,
           height: TILE_HEIGHT,
           visible: computed(() => inView(slot.placed()?.entry, !!fixed)),
-          transform: { scale: slot.press.value((value) => 1 - 0.1 * value) },
+          transform: { translateX: flip.x, translateY: rise },
         }}
       >
-        <Frame slot={slot} width={TILE_WIDTH} height={TILE_HEIGHT} radius={TILE_RADIUS} />
+        <Frame slot={slot} width={TILE_WIDTH} height={TILE_HEIGHT} radius={TILE_RADIUS} scale={press} />
         <SharpImage
           src={computed(() => iconOf(item()))}
           left={Math.round((TILE_WIDTH - TILE_ICON) / 2)}
           top={TILE_ICON_TOP}
           size={TILE_ICON}
-          scale={computed(() => (1 + 0.08 * slot.hover.value()) * (1 - 0.1 * slot.press.value()))}
+          scale={computed(() => (1 + (TILE_ICON_GROW - 1) * slot.hover.value()) * press())}
+          lift={computed(() => -MOTION.hover.lift * slot.hover.value() + iconShift())}
         />
         <Box
           style={{
@@ -1437,6 +1972,7 @@ export function createLauncher(options: LauncherOptions): Launcher {
             height: TILE_LABEL_HEIGHT,
             justifyContent: "center",
             alignItems: "center",
+            transform: { translateY: labelShift },
           }}
         >
           <Label
@@ -1505,6 +2041,20 @@ export function createLauncher(options: LauncherOptions): Launcher {
     const textLeft = iconLeft + look.icon + look.gap;
     const kindLeft = CONTENT_WIDTH - 1 - look.padRight - KIND_WIDTH;
     const textWidth = kindLeft - px(12) - textLeft;
+    // The results glide moves the whole row. The press (0.97) and a fresh
+    // row's grow scale the frame and the icon each on its own; the icon
+    // and the text move as if scaled with the row (see Tile for why).
+    const flip = flipOf(slotMove(slot, true));
+    const scale = computed(() => (1 - ROW_PRESS_DEPTH * slot.press.value()) * flip.scale());
+    /** How far a point of the row moves under `scale`, from the row's middle. */
+    const shift = (at: () => number, middle: () => number) => computed(() => (at() - middle()) * (scale() - 1));
+    const middleX = () => CONTENT_WIDTH / 2;
+    const middleY = () => height() / 2;
+    const iconShiftX = shift(() => iconLeft + look.icon / 2, middleX);
+    const textShiftX = shift(() => textLeft, middleX);
+    const titleShiftY = shift(() => tops().title + look.titleLine / 2, middleY);
+    const subShiftY = shift(() => tops().sub + look.subLine / 2, middleY);
+    const kindShiftX = shift(() => kindLeft + KIND_WIDTH, middleX);
     return (
       <Box
         style={{
@@ -1514,16 +2064,17 @@ export function createLauncher(options: LauncherOptions): Launcher {
           width: CONTENT_WIDTH,
           height,
           visible: computed(() => inView(entry(), false)),
-          transform: { scale: slot.press.value((value) => 1 - 0.03 * value) },
+          transform: { translateX: flip.x, translateY: flip.y },
         }}
       >
-        <Frame slot={slot} width={CONTENT_WIDTH} height={height} radius={999} />
+        <Frame slot={slot} width={CONTENT_WIDTH} height={height} radius={999} scale={scale} />
         <SharpImage
           src={computed(() => iconOf(item(), entry()?.section))}
           left={iconLeft}
           top={height((h) => Math.round((h - look.icon) / 2))}
           size={look.icon}
-          scale={slot.press.value((value) => 1 - 0.03 * value)}
+          scale={scale}
+          shift={iconShiftX}
           visible={isMath((math) => !math)}
         />
         {pill ? (
@@ -1539,6 +2090,7 @@ export function createLauncher(options: LauncherOptions): Launcher {
               alignItems: "center",
               justifyContent: "center",
               visible: isMath,
+              transform: { translateX: iconShiftX },
             }}
           >
             <Label text="=" style={{ color: TEXT, fontFamily: FONT, fontSize: font(26), lineHeight: px(34) }} />
@@ -1553,6 +2105,7 @@ export function createLauncher(options: LauncherOptions): Launcher {
             width: textWidth,
             height: look.titleLine,
             alignItems: "center",
+            transform: { translateX: textShiftX, translateY: titleShiftY },
           }}
         >
           <Label
@@ -1593,6 +2146,7 @@ export function createLauncher(options: LauncherOptions): Launcher {
             height: look.subLine,
             alignItems: "center",
             visible: hasSub,
+            transform: { translateX: textShiftX, translateY: subShiftY },
           }}
         >
           {Array.from({ length: SUB_PARTS }, (_, k) => {
@@ -1629,6 +2183,7 @@ export function createLauncher(options: LauncherOptions): Launcher {
             width: KIND_WIDTH,
             height,
             alignItems: "center",
+            transform: { translateX: kindShiftX },
           }}
           direction="row"
         >
@@ -1642,24 +2197,39 @@ export function createLauncher(options: LauncherOptions): Launcher {
     );
   };
 
-  const SectionTitle = ({ text: label, y, visible }: { text: ReadonlySignal<string> | string; y: ReadonlySignal<number> | number; visible?: ReadonlySignal<boolean> }) => (
-    <Box style={{ position: "absolute", left: HEADER_X, top: y, height: HEADER_LINE, alignItems: "center", visible }}>
+  const SectionTitle = ({
+    text: label,
+    y,
+    visible,
+    rise,
+  }: {
+    text: ReadonlySignal<string> | string;
+    y: ReadonlySignal<number> | number;
+    visible?: ReadonlySignal<boolean>;
+    /** The cascade or the results glide: moved down by this many px. */
+    rise: ReadonlySignal<number>;
+  }) => (
+    <Box style={{ position: "absolute", left: HEADER_X, top: y, height: HEADER_LINE, alignItems: "center", visible, transform: { translateY: rise } }}>
       <Label text={label} style={{ color: SECTION_COLOR, fontFamily: FONT, fontSize: font(13), lineHeight: HEADER_LINE }} />
     </Box>
   );
 
   const homeTitles = computed(() => homeLayout().headers);
   // Where each of the 40 home tiles goes (the same for any apps).
-  const HOME_POSITIONS = layoutHome({
-    recommended: Array.from({ length: 16 }, () => FALLBACK_APPS[0]),
-    pinned: Array.from({ length: HOME_TILES - 16 }, () => FALLBACK_APPS[0]),
-  }).entries.map(({ x, y }) => ({ x, y }));
+  const HOME_POSITIONS = HOME_SHAPE.entries.map(({ x, y }) => ({ x, y }));
   const HomePage = () => (
     <Box style={{ position: "absolute", left: -BODY.x, top: 0, width: PANEL_WIDTH, height: BODY.height, visible: typing((on) => !on) }}>
       {[
-        ...[0, 1].map((k) => (
-          <SectionTitle text={computed(() => homeTitles()[k]?.text.toUpperCase() ?? "")} y={computed(() => homeTitles()[k]?.y ?? 0)} />
-        )),
+        ...[0, 1].map((k) => {
+          const shown = cascadeOf(HOME_SHAPE.headers[k].y);
+          return (
+            <SectionTitle
+              text={computed(() => homeTitles()[k]?.text.toUpperCase() ?? "")}
+              y={computed(() => homeTitles()[k]?.y ?? 0)}
+              rise={shown((value) => MOTION.cascade.rise * (1 - value))}
+            />
+          );
+        }),
         ...homeTiles.map((slot, k) => <Tile slot={slot} fixed={HOME_POSITIONS[k]} />),
       ]}
     </Box>
@@ -1680,13 +2250,22 @@ export function createLauncher(options: LauncherOptions): Launcher {
         }}
       >
         {[
-          ...Array.from({ length: HEADERS }, (_, k) => (
-            <SectionTitle
-              text={computed(() => headers()[k]?.text.toUpperCase() ?? "")}
-              y={computed(() => headers()[k]?.y ?? 0)}
-              visible={computed(() => headers()[k] !== undefined)}
-            />
-          )),
+          ...Array.from({ length: HEADERS }, (_, k) => {
+            const flip = flipOf(
+              computed(() => {
+                flipVersion();
+                return typing() ? headerMoves[k] : undefined;
+              }),
+            );
+            return (
+              <SectionTitle
+                text={computed(() => headers()[k]?.text.toUpperCase() ?? "")}
+                y={computed(() => headers()[k]?.y ?? 0)}
+                visible={computed(() => headers()[k] !== undefined)}
+                rise={flip.y}
+              />
+            );
+          }),
           ...Array.from({ length: NOTES }, (_, k) => {
             const note = computed(() => notes()[k]);
             const centred = note((value) => value?.text === "Nothing found");
@@ -1811,8 +2390,6 @@ export function createLauncher(options: LauncherOptions): Launcher {
     );
   };
 
-  // The avatar grows and presses like the lights.
-  const avatarGrow = computed(() => 1 + hoverGrow(ACCOUNT.avatar) * account.hover.value() - 0.1 * account.press.value());
   const PowerRow = () => (
     <>
       <Box
@@ -1826,35 +2403,49 @@ export function createLauncher(options: LauncherOptions): Launcher {
           background: computed(() =>
             hovered()?.kind === "account" || selected() === layout().entries.length ? ACCOUNT_HOVER_FILL : "#00000000",
           ),
-          transform: { scale: account.press.value((value) => 1 - 0.05 * value) },
+          transform: { scale: accountScale },
+        }}
+      />
+      {/*
+        The name is not inside the scaled pill (see Tile: a scaled label gets
+        cut with "..."), and the avatar has its own press: both move as if
+        scaled with the pill. The avatar is blue glass with your initial as
+        the glyph.
+      */}
+      <Box
+        style={{
+          position: "absolute",
+          left: ACCOUNT.x + Math.round((ACCOUNT.height - ACCOUNT.avatar) / 2),
+          top: ACCOUNT.y + Math.round((ACCOUNT.height - ACCOUNT.avatar) / 2),
+          width: ACCOUNT.avatar,
+          height: ACCOUNT.avatar,
+          transform: { translateX: accountScale((scale) => (ACCOUNT.height / 2 - ACCOUNT.width / 2) * (scale - 1)) },
         }}
       >
-        <Box
-          style={{
-            position: "absolute",
-            left: Math.round((ACCOUNT.height - ACCOUNT.avatar) / 2),
-            top: Math.round((ACCOUNT.height - ACCOUNT.avatar) / 2),
-            width: ACCOUNT.avatar,
-            height: ACCOUNT.avatar,
-          }}
-        >
-          {/* The avatar is blue glass with your initial as the glyph. */}
-          <GlassButton
-            size={ACCOUNT.avatar}
-            body="./assets/launcher-light-blue.svg"
-            glow="./assets/launcher-hover-avatar"
-            glyph="./assets/launcher-avatar-letter.svg"
-            grow={avatarGrow}
-            glowValue={account.glow.value}
-          />
-        </Box>
-        <Box style={{ position: "absolute", left: ACCOUNT.nameX, top: 0, height: ACCOUNT.height, alignItems: "center" }}>
-          <Label text={ACCOUNT_NAME} style={{ color: TEXT, fontFamily: FONT, fontSize: font(15), lineHeight: px(20) }} />
-        </Box>
+        <GlassButton
+          size={ACCOUNT.avatar}
+          body="./assets/launcher-light-blue.svg"
+          glow="./assets/launcher-hover-avatar"
+          glyph="./assets/launcher-avatar-letter.svg"
+          grow={avatarGrow}
+          glowValue={account.glow.value}
+        />
+      </Box>
+      <Box
+        style={{
+          position: "absolute",
+          left: ACCOUNT.x + ACCOUNT.nameX,
+          top: ACCOUNT.y,
+          height: ACCOUNT.height,
+          alignItems: "center",
+          transform: { translateX: accountScale((scale) => (ACCOUNT.nameX - ACCOUNT.width / 2) * (scale - 1)) },
+        }}
+      >
+        <Label text={ACCOUNT_NAME} style={{ color: TEXT, fontFamily: FONT, fontSize: font(15), lineHeight: px(20) }} />
       </Box>
       {POWER.map((power, k) => {
         const size = lightSize(k);
-        const grow = computed(() => 1 + hoverGrow(size) * lights[k].hover.value() - 0.1 * lights[k].press.value());
+        const grow = lightGrow[k];
         return (
           <Box
             style={{
@@ -2006,6 +2597,7 @@ export function createLauncher(options: LauncherOptions): Launcher {
             </Box>
           </Box>
           <PowerRow />
+          <Box paint={MOTION_PAINT} style={{ position: "absolute", left: 0, top: 0, width: PANEL_WIDTH, height: PANEL_HEIGHT }} />
           <Tooltip />
           <ContextPill />
           <Box style={{ position: "absolute", left: 0, top: 0, width: 1, height: 1, overflow: "hidden" }}>
