@@ -54,9 +54,9 @@ PlasmoidItem {
 
     fullRepresentation: Item {
         id: cell
-        readonly property real bodyH: Math.round(Math.min(height * 0.62, 20))
+        readonly property real bodyH: Math.round(Math.min(height * 0.34, 13))
         readonly property real bodyW: Math.round(bodyH * 2.05)
-        Layout.minimumWidth: root.level < 0 ? 0 : bodyW + 10
+        Layout.minimumWidth: root.level < 0 ? 0 : bodyW + 8
         Layout.preferredWidth: Layout.minimumWidth
         Layout.maximumWidth: Layout.minimumWidth
         visible: root.level >= 0
@@ -73,14 +73,14 @@ PlasmoidItem {
                 height: parent.height
                 radius: Math.round(height * 0.28)
                 color: "#40000000"
-                border.width: 1.5
+                border.width: 1
                 border.color: "#e6ebf2"
 
                 Rectangle {
-                    x: 2.5
-                    y: 2.5
-                    height: parent.height - 5
-                    width: Math.max(height * 0.35, (parent.width - 5) * root.level / 100)
+                    x: 2
+                    y: 2
+                    height: parent.height - 4
+                    width: Math.max(height * 0.35, (parent.width - 4) * root.level / 100)
                     radius: Math.max(1, body.radius - 2)
                     color: root.levelColor
                 }
@@ -89,7 +89,7 @@ PlasmoidItem {
             Rectangle {
                 anchors.verticalCenter: body.verticalCenter
                 x: body.width + 0.5
-                width: 2.5
+                width: 2
                 height: Math.round(body.height * 0.42)
                 radius: 1
                 color: "#e6ebf2"
@@ -109,7 +109,7 @@ PlasmoidItem {
                 color: "#ffffff"
                 font.family: "Noto Sans"
                 font.bold: true
-                font.pixelSize: Math.round(cell.bodyH * 0.62)
+                font.pixelSize: Math.round(cell.bodyH * 0.72)
                 renderType: Text.CurveRendering
             }
         }
