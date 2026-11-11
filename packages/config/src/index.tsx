@@ -868,6 +868,18 @@ if (!INSIDE_KDE) {
     env: KDE_SERVICE_ENV,
     restart: "on-exit",
   });
+  // KDE's power service, on a laptop only: the tray's battery icon gets its
+  // data from it, so without it the battery never showed. A PC with no
+  // battery skips it. Its lid, sleep and dimming settings are in
+  // ~/.config/powerdevilrc (on the laptop: no action for any of them).
+  COMPOSITOR.process.spawn({
+    command: [
+      "sh",
+      "-c",
+      "ls /sys/class/power_supply/BAT* >/dev/null 2>&1 && exec systemctl --user start plasma-powerdevil.service",
+    ],
+    env: KDE_SERVICE_ENV,
+  });
   // Owns KWin's Window View D-Bus name, so the taskbar shows a group's
   // windows side by side instead of a text list (see the helper's header).
   COMPOSITOR.process.service("window-view-dbus", {
