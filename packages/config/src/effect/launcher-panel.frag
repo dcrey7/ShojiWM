@@ -2,6 +2,9 @@
 // (style.background), the Aero shine across the top, and the light rim
 // (style.border). As in the mock: the shine covers the top 110 px, fading
 // from 11% white to 5% at 48%, then gone by 50%.
+// 11 Nov 2026: shine off (0.0), so the launcher is plain frosted glass like
+// the taskbar and the title bars. 1.0 brings the Aero shine back.
+const float SHINE_STRENGTH = 0.0;
 
 vec4 paint_main(PaintContext ctx) {
     vec4 fill = ctx.background * shoji_fill_coverage(ctx);
@@ -13,7 +16,7 @@ vec4 paint_main(PaintContext ctx) {
     } else if (y < 55.0) {
         shine = mix(0.05, 0.0, (y - 52.8) / 2.2);
     }
-    vec4 gloss = vec4(shine) * shoji_inner_coverage(ctx);
+    vec4 gloss = vec4(shine * SHINE_STRENGTH) * shoji_inner_coverage(ctx);
     vec4 rim = shoji_border_color_at(ctx) * shoji_border_coverage(ctx);
     return shoji_over(rim, shoji_over(gloss, fill));
 }
