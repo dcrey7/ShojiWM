@@ -980,6 +980,17 @@ COMPOSITOR.process.service("clip-image-path", {
   command: ["sh", "-c", 'exec python3 "$HOME/.config/shojiwm/src/helpers/clip-image-path.py"'],
   restart: "on-exit",
 });
+// Text copied in a Wayland app (Konsole) also lands on the X11 clipboard, so
+// Chrome pastes it even when the xwayland-satellite bridge is stuck on an old
+// text (12 Nov 2026; see the helper's header).
+COMPOSITOR.process.service("clip-x11-sync", {
+  command: [
+    "sh",
+    "-c",
+    'exec uv run -q --no-project --with python-xlib python3 "$HOME/.config/shojiwm/src/helpers/clip-x11-sync.py"',
+  ],
+  restart: "on-exit",
+});
 
 // The preview has no KDE desktop of its own, so it shows your KDE wallpaper
 // with swaybg (from ShojiWM's .localdeps folder).

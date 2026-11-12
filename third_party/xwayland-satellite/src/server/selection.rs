@@ -51,7 +51,9 @@ impl<S: X11Selection> SelectionStates<S> {
 }
 
 enum SelectionData<S: X11Selection, T: SelectionType> {
-    X11 { inner: T::Source, data: Weak<S> },
+    /// `mimes`: the types this source offers. An offer with exactly these
+    /// types is this source coming back to us (see `handle_impl`).
+    X11 { inner: T::Source, data: Weak<S>, mimes: Vec<String> },
     Foreign(ForeignSelection<T>),
 }
 
@@ -85,8 +87,11 @@ impl<S: X11Selection> InnerServerState<S> {
         let events = T::get_events(&mut self.world);
 
         for (mime_type, fd) in std::mem::take(&mut events.requests) {
-            let SelectionData::X11 { data, .. } = state.source.as_ref().unwrap() else {
-                unreachable!("Got selection request without having set the selection?")
+            // A late request for an X11 source we already dropped (another
+            // client copied since): nothing to send.
+            let Some(SelectionData::X11 { data, .. }) = state.source.as_ref() else {
+                warn!("selection request for a dropped X11 source ({mime_type}), ignored");
+                continue;
             };
             if let Some(data) = data.upgrade() {
                 data.write_to(&mime_type, fd);
@@ -100,6 +105,26 @@ impl<S: X11Selection> InnerServerState<S> {
             if cancelled.contains(&T::source_id(inner)) {
                 state.source = None;
             }
+        }
+
+        // A new offer while our X11 source is current: if it has our types, it
+        // is our own source coming back. Otherwise another client copied, so
+        // take it. The compositor can deny our set_selection silently (we did
+        // not have keyboard focus) and never cancel that source; without this
+        // check the stale X11 source blocked every later Wayland copy, and X11
+        // apps kept pasting the old text (ShojiWM, 12 Nov 2026).
+        let ours_is_stale = match &state.source {
+            Some(SelectionData::X11 { mimes, .. }) => events.offer.as_ref().is_some_and(|offer| {
+                let mut offered: Vec<String> = T::get_mimes(offer).into_vec();
+                let mut own = mimes.clone();
+                offered.sort();
+                own.sort();
+                offered != own
+            }),
+            _ => false,
+        };
+        if ours_is_stale {
+            state.source = None;
         }
 
         if state.source.is_none() {
@@ -132,6 +157,7 @@ impl<S: X11Selection> InnerServerState<S> {
             state.source = Some(SelectionData::X11 {
                 inner: src,
                 data: Rc::downgrade(selection),
+                mimes: selection.mime_types().into_iter().map(str::to_owned).collect(),
             });
         }
     }
