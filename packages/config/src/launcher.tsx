@@ -477,6 +477,7 @@ export function createLauncher(options: LauncherOptions): Launcher {
     opacity: 0,
     closeMs: MOTION.open.close,
   });
+  const OPEN_LIFT_PER_SCALE = 8 / (1 - MOTION.open.fromScale);
   const openScale = computed(() => {
     const from = openFrom();
     if (opening()) {
@@ -2593,7 +2594,11 @@ export function createLauncher(options: LauncherOptions): Launcher {
         visible={shown}
         opacity={openOpacity}
         interactive={false}
-        transform={{ origin: { x: PANEL_WIDTH / 2, y: PANEL_HEIGHT / 2 }, scale: openScale }}
+        // A slide, not a scale: a scaled window goes through the engine's
+        // snapshot path, and a stale snapshot flashed the full panel for ~4
+        // frames before the fade (seen in a 144 fps recording, 12 Nov 2026).
+        // The spring's 0.96..1 runs as 8 px below..in place.
+        transform={{ translateY: computed(() => Math.round((1 - openScale()) * OPEN_LIFT_PER_SCALE)) }}
       >
         <Box style={{ position: "relative", width: PANEL_WIDTH, height: PANEL_HEIGHT }}>
           {glass ? (
