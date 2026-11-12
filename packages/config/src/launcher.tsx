@@ -445,6 +445,32 @@ export function createLauncher(options: LauncherOptions): Launcher {
   // middle of an open (or the other way round) does not jump.
   const OPEN_CLOCK = clockVar("launcher.open");
   const CLOSE_CLOCK = clockVar("launcher.close");
+  // The open motion counts from the first frame that is really drawn, not
+  // from when open() ran. The engine stamps the first frame up to ~150 ms
+  // after the clock's start, so a plain clock skipped the fade and the panel
+  // popped in at full opacity: the flicker before the menu (12 Nov 2026).
+  // The clock runs OPEN_SLACK_MS longer, so the motion still ends in full.
+  const OPEN_SLACK_MS = 250;
+  const [openEpoch, setOpenEpoch] = signal(0);
+  let openBase: number | null = null;
+  const openT = computed(() => {
+    openEpoch();
+    const raw = OPEN_CLOCK.value();
+    // open() itself reads the clock at 0; the first frame tick is the first
+    // read past 0, and that frame is t = 0.
+    if (openBase === null) {
+      if (raw <= 0) {
+        return 0;
+      }
+      openBase = raw;
+    }
+    return Math.max(0, raw - openBase);
+  });
+  const startOpenClock = () => {
+    openBase = null;
+    void runClock(OPEN_CLOCK, 0, OPEN_RUN_MS + OPEN_SLACK_MS);
+    setOpenEpoch(openEpoch.peek() + 1);
+  };
   const [opening, setOpening] = signal(false);
   const [openFrom, setOpenFrom] = signal<{ scale: number; opacity: number; closeMs: number }>({
     scale: MOTION.open.fromScale,
@@ -454,7 +480,7 @@ export function createLauncher(options: LauncherOptions): Launcher {
   const openScale = computed(() => {
     const from = openFrom();
     if (opening()) {
-      const t = OPEN_CLOCK.value();
+      const t = openT();
       const spring = t >= OPEN_RUN_MS ? 1 : springAt(t / MOTION.open.spring, MOTION.open.zeta);
       return from.scale + (1 - from.scale) * spring;
     }
@@ -464,7 +490,7 @@ export function createLauncher(options: LauncherOptions): Launcher {
   const openOpacity = computed(() => {
     const from = openFrom();
     if (opening()) {
-      return from.opacity + (1 - from.opacity) * FADE_EASING(clamp01(OPEN_CLOCK.value() / MOTION.open.fade));
+      return from.opacity + (1 - from.opacity) * FADE_EASING(clamp01(openT() / MOTION.open.fade));
     }
     return from.opacity * (1 - CLOSE_EASING(clamp01(CLOSE_CLOCK.value() / from.closeMs)));
   });
@@ -614,7 +640,7 @@ export function createLauncher(options: LauncherOptions): Launcher {
   const cascadeRowShown = Array.from({ length: CASCADE_ROWS.size }, (_, row) =>
     computed(() =>
       opening()
-        ? SOFT_OUT(cascadeAt(OPEN_CLOCK.value(), row, CASCADE_ROWS.size, BUDGET.cascade.total, BUDGET.cascade.row))
+        ? SOFT_OUT(cascadeAt(openT(), row, CASCADE_ROWS.size, BUDGET.cascade.total, BUDGET.cascade.row))
         : 1,
     ),
   );
@@ -1514,6 +1540,8 @@ export function createLauncher(options: LauncherOptions): Launcher {
       closeMs: MOTION.open.close,
     });
     setOpening(true);
+    // Reset the clock before anything shows the panel.
+    startOpenClock();
     resetFlip();
     ringJump = true;
     closing = false;
@@ -1532,7 +1560,6 @@ export function createLauncher(options: LauncherOptions): Launcher {
     if (source !== "orb") {
       pulseOrb();
     }
-    void runClock(OPEN_CLOCK, 0, OPEN_RUN_MS);
     grab = COMPOSITOR.input.grab({
       onKey,
       onPointerMotion,
@@ -1693,7 +1720,7 @@ export function createLauncher(options: LauncherOptions): Launcher {
     // show the panel while it is scaled or faded).
     if (raw.replay === "cascade" && isOpen.peek() && !closing) {
       setOpenFrom({ scale: 1, opacity: 1, closeMs: MOTION.open.close });
-      void runClock(OPEN_CLOCK, 0, OPEN_RUN_MS);
+      startOpenClock();
     }
     if (raw.glass !== undefined) {
       setGlassOn(raw.glass);

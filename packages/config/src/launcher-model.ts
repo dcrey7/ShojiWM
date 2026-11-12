@@ -828,7 +828,9 @@ export const MOTION = {
   /** The selection ring: the leading edge, the trailing edge. */
   glide: { lead: 110, trail: 190 },
   /** The tiles on open: each row rises over `row`, all within `total` (the panel fades in meanwhile). */
-  cascade: { total: 180, row: 120, rise: 8 },
+  // rise 0 (12 Nov 2026): the rows could not fade in (the engine has no image
+  // opacity), so they jumped up while the panel faded: it read as a flicker.
+  cascade: { total: 180, row: 120, rise: 0 },
   /** Results while typing: slide; a new one comes in over `fade` ms (the mock's name), after a short delay. */
   flip: { move: 150, fade: 120, fadeDelay: 20, rise: 6, fromScale: 0.97 },
   /** The panel: opens from 96% on a spring with a quick fade, closes to 97%. */
