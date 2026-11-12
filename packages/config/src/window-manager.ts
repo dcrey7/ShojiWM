@@ -4809,6 +4809,9 @@ export class Workspace {
   // Tiles the user resized by hand. Only these keep their own width;
   // every other tile gets the even split from defaultTileWidth.
   private readonly userSizedTileIds = new Set<string>();
+  // The column the user resized last. It keeps its width; another column
+  // takes up the rest of the page (see fillerColumnWidth).
+  private lastSizedTileId: string | null = null;
   // Tiles stacked under the tile before them: they share that tile's column
   // and split its height. A tile not in this set starts a new column.
   private readonly stackedWindowIds = new Set<string>();
@@ -5486,6 +5489,7 @@ export class Workspace {
     const widthOwner = head ?? window;
     this.tileWidthByWindowId.set(widthOwner.id, width);
     this.userSizedTileIds.add(widthOwner.id);
+    this.lastSizedTileId = widthOwner.id;
     this.stopKineticScroll();
     this.activeWindowId = window.id;
     this.scrollToWindow(window);
@@ -6654,6 +6658,7 @@ export class Workspace {
     const widthOwner = head ?? event.window;
     this.tileWidthByWindowId.set(widthOwner.id, width);
     this.userSizedTileIds.add(widthOwner.id);
+    this.lastSizedTileId = widthOwner.id;
     this.scrollToWindow(event.window);
     this.applyLayout();
   }
@@ -8053,6 +8058,11 @@ export class Workspace {
     }
 
     const even = evenTileSplit();
+    // Always, even split or not: 2 or 3 columns never leave a gap.
+    const filler = this.fillerColumnWidth(window, viewportRect);
+    if (filler !== null) {
+      return filler;
+    }
     // With the even split, only a tile the user resized keeps its width.
     const storedWidth =
       even && !this.userSizedTileIds.has(window.id)
@@ -8102,6 +8112,74 @@ export class Workspace {
         ),
       ),
     );
+  }
+
+  /**
+   * When the columns fit on one page (2 or 3 of them), one column fills what
+   * the others leave, so the page never shows a gap or cuts a column. It is
+   * the last column, or the one before it when the user resized the last one.
+   * Returns null for any other column, or when the rest does not fit.
+   *
+   *   [ Konsole, resized to 900 ][ Chrome = page - 900 - gap ]
+   */
+  private fillerColumnWidth(
+    window: WaylandWindow,
+    viewportRect: ManagedWindowRect,
+  ): number | null {
+    if (this.mode === "tiled") {
+      return null;
+    }
+    const columns = this.tileColumns();
+    if (columns.length < 2 || columns.length > TILE_FIT_MAX_COLUMNS) {
+      return null;
+    }
+    if (columns.some((column) => column[0]?.state[WINDOW_STATE_MAXIMIZED]())) {
+      return null;
+    }
+    let fillerIndex = columns.length - 1;
+    if (columns[fillerIndex][0]?.id === this.lastSizedTileId) {
+      fillerIndex -= 1;
+    }
+    if (this.columnIndexOf(columns, window.id) !== fillerIndex) {
+      return null;
+    }
+    let others = 0;
+    columns.forEach((column, index) => {
+      if (index !== fillerIndex && column[0]) {
+        others += this.tileWidthForWindow(column[0], viewportRect);
+      }
+    });
+    const rest =
+      read(viewportRect.width) - TILE_GAP * (columns.length - 1) - others;
+    const min = this.minTileWidth(window, viewportRect);
+    if (rest < min || rest > Math.max(min, this.maxTileWidth(window))) {
+      return null;
+    }
+    return rest;
+  }
+
+  /** Debug: each column's width as the layout wants it, and why. */
+  public debugColumns() {
+    const viewportRect = this.tileViewportRect();
+    return {
+      mode: this.mode,
+      viewport: read(viewportRect.width),
+      even: evenTileSplit(),
+      lastSized: this.lastSizedTileId,
+      columns: this.tileColumns().map((column) => {
+        const head = column[0];
+        return {
+          id: head?.id,
+          app: head ? read(head.appId) : null,
+          width: head ? this.tileWidthForWindow(head, viewportRect) : null,
+          filler: head ? this.fillerColumnWidth(head, viewportRect) : null,
+          stored: head ? this.tileWidthByWindowId.get(head.id) ?? null : null,
+          userSized: head ? this.userSizedTileIds.has(head.id) : false,
+          min: head ? this.minTileWidth(head, viewportRect) : null,
+          max: head ? this.maxTileWidth(head) : null,
+        };
+      }),
+    };
   }
 
   private defaultTileWidth(viewportRect: ManagedWindowRect, even: boolean): number {

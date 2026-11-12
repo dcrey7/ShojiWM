@@ -636,7 +636,11 @@ WORKSPACE_IPC.handle("debug.quality", (params) => {
   }
   return qualityDebug();
 });
-WORKSPACE_IPC.handle("debug.tabDrag", () => ({ events: tabDragDebug() }));
+// Each column's width on the current workspace, as the layout wants it.
+WORKSPACE_IPC.handle("debug.columns", () =>
+  HYBRID_WINDOW_MANAGER.getCurrentWorkspace()?.debugColumns() ?? null,
+);
+WORKSPACE_IPC.handle("debug.tabDrag",() => ({ events: tabDragDebug() }));
 WORKSPACE_IPC.handle("debug.focus", () => ({
   events: focusDebugEvents,
   focusedShellWindows: [...FOCUSED_SHELL_WINDOWS],
