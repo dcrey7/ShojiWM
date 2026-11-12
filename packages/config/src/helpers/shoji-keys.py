@@ -20,7 +20,7 @@ Floating, Workspaces, Switchers, Screenshots, Session, Debug).
   GROUP   Print only that group, for example: shoji-keys tiled
 
 Some keys do a different thing in each layout mode of the workspace: tiled,
-scrolling or floating. Super+Space switches the mode, Super+S turns floating
+scrolling or floating. Super+Shift+Space switches the mode, Super+S turns floating
 on and off. Those keys are in the Tiled, Scrolling and Floating groups.
 
 Super+/ shows the same list on screen.

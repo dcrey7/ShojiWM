@@ -64,7 +64,7 @@ import {
 export type WorkspaceMode = "tiled" | "scrolling" | "floating";
 export type TilingMode = Exclude<WorkspaceMode, "floating">;
 
-/** Super+Space goes through the modes in this order. */
+/** Super+Shift+Space (moved off Super+Space on 12 Nov 2026: too easy to hit after Super) goes through the modes in this order. */
 const WORKSPACE_MODE_CYCLE: WorkspaceMode[] = ["tiled", "scrolling", "floating"];
 
 /** What a tiled-mode key did: acted, hit the screen edge, or found nothing. */
@@ -2223,7 +2223,7 @@ export class HybridWindowManager {
     }
   }
 
-  /** Super+Space: tiled -> scrolling -> floating -> tiled. */
+  /** Super+Shift+Space: tiled -> scrolling -> floating -> tiled. */
   public cycleCurrentWorkspaceMode() {
     const workspace = this.getCurrentWorkspace();
     if (!workspace) {

@@ -51,8 +51,8 @@ SHOWN_GROUPS = [
     "Session",
 ]
 GROUP_NOTES = {
-    "Tiled": "When the workspace is tiled (Super+Space)",
-    "Scrolling": "When the workspace scrolls (Super+Space)",
+    "Tiled": "When the workspace is tiled (Super+Shift+Space)",
+    "Scrolling": "When the workspace scrolls (Super+Shift+Space)",
     "Floating": "When the workspace floats (Super+S)",
 }
 # Key names as the keycaps show them.

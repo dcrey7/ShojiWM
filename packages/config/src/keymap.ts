@@ -247,7 +247,7 @@ export function createKeymap(deps: KeymapDeps): KeyEntry[] {
       id: "layout-mode",
       group: "Windows",
       description: "Layout of this workspace: tiled, scrolling, floating (next one)",
-      binds: [{ keys: "Super+Space", action: changesLayout(() => wm.cycleCurrentWorkspaceMode()) }],
+      binds: [{ keys: "Super+Shift+Space", action: changesLayout(() => wm.cycleCurrentWorkspaceMode()) }],
     },
     {
       id: "toggle-tiling",
