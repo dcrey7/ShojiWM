@@ -974,6 +974,12 @@ COMPOSITOR.process.service("cliphist-image", {
   command: ["wl-paste", "--type", "image", "--watch", "cliphist", "store"],
   restart: "on-exit",
 });
+// A copied image also pastes as its file path, so Ctrl+V in Konsole gives
+// Claude Code the image (see the helper's header).
+COMPOSITOR.process.service("clip-image-path", {
+  command: ["sh", "-c", 'exec python3 "$HOME/.config/shojiwm/src/helpers/clip-image-path.py"'],
+  restart: "on-exit",
+});
 
 // The preview has no KDE desktop of its own, so it shows your KDE wallpaper
 // with swaybg (from ShojiWM's .localdeps folder).
