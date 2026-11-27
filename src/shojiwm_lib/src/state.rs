@@ -65,6 +65,7 @@ use smithay::{
         input_method::InputMethodManagerState,
         output::OutputManagerState,
         pointer_constraints::PointerConstraintsState,
+        pointer_gestures::PointerGesturesState,
         presentation::PresentationState,
         relative_pointer::RelativePointerManagerState,
         selection::{
@@ -1719,6 +1720,10 @@ impl ShojiWM {
         VirtualKeyboardManagerState::new::<Self, _>(&dh, |_client| true);
         RelativePointerManagerState::new::<Self>(&dh);
         PointerConstraintsState::new::<Self>(&dh);
+        // Touchpad pinch/swipe/hold for clients. Without this global, Gwenview
+        // 26.08 crashed on every next/previous photo (its WaylandGestures
+        // destructor touches gesture objects it never got). 27 Nov 2026.
+        PointerGesturesState::new::<Self>(&dh);
 
         // Data device is responsible for clipboard and drag-and-drop
         let data_device_state = DataDeviceState::new::<Self>(&dh);
